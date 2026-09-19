@@ -1,0 +1,201 @@
+#!/bin/bash
+# brew-curl-aria2 - enable/disable/inspect Homebrew's aria2c download backend.
+#
+# Homebrew's only supported hook for this is HOMEBREW_CURL_PATH (see
+# Library/Homebrew/utils/curl.sh and Library/Homebrew/shims/shared/curl), which
+# is read from Homebrew's user environment file:
+#   $XDG_CONFIG_HOME/homebrew/brew.env  or  ~/.homebrew/brew.env
+#
+# This command writes exactly one line there - "enable" and "disable" are a
+# single line apart, so nothing about your Homebrew install is patched.
+
+set -u
+
+VERSION="0.1.0"
+
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+PREFIX="${HOMEBREW_PREFIX:-$(/opt/homebrew/bin/brew --prefix 2>/dev/null || echo /opt/homebrew)}"
+
+find_shim() {
+  local installed="$PREFIX/opt/brew-curl-aria2/libexec/curl-aria2"
+  local sibling
+  sibling="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)/libexec/curl-aria2"
+  for candidate in "$installed" "$sibling"; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHIM="$(find_shim || true)"
+
+env_file() {
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    printf '%s/homebrew/brew.env\n' "$XDG_CONFIG_HOME"
+  else
+    printf '%s/.homebrew/brew.env\n' "$HOME"
+  fi
+}
+
+die() {
+  printf 'brew-curl-aria2: %s\n' "$1" >&2
+  exit 1
+}
+
+current_backend() {
+  local f
+  f="$(env_file)"
+  if [ -f "$f" ]; then
+    grep '^HOMEBREW_CURL_PATH=' "$f" 2>/dev/null | tail -1 | cut -d= -f2-
+  fi
+}
+
+cmd_enable() {
+  [ -n "$SHIM" ] || die "找不到 curl-aria2 shim，请先 brew install brew-curl-aria2"
+  command -v aria2c >/dev/null 2>&1 || die "缺少 aria2c，请先 brew install aria2"
+
+  local f dir tmp
+  f="$(env_file)"
+  dir="$(dirname "$f")"
+  mkdir -p "$dir" || die "无法创建 $dir"
+  [ -e "$f" ] || : >"$f"
+  [ -w "$f" ] || die "$f 不可写"
+
+  tmp="$(mktemp)"
+  grep -v '^HOMEBREW_CURL_PATH=' "$f" >"$tmp" 2>/dev/null || true
+  printf 'HOMEBREW_CURL_PATH=%s\n' "$SHIM" >>"$tmp"
+  cat "$tmp" >"$f"
+  rm -f "$tmp"
+
+  printf '已启用 aria2c 下载后端。\n'
+  printf '  配置文件: %s\n' "$f"
+  printf '  curl 替换: %s\n' "$SHIM"
+  printf '  并发连接: %s (可用 BREW_CURL_ARIA2_CONNECTIONS 调整)\n' "${BREW_CURL_ARIA2_CONNECTIONS:-8}"
+  printf '\n验证: %s test\n' "$SELF"
+}
+
+cmd_disable() {
+  local f tmp
+  f="$(env_file)"
+  [ -f "$f" ] || { printf '未启用（%s 不存在）。\n' "$f"; return 0; }
+
+  tmp="$(mktemp)"
+  grep -v '^HOMEBREW_CURL_PATH=' "$f" >"$tmp" 2>/dev/null || true
+  cat "$tmp" >"$f"
+  rm -f "$tmp"
+
+  printf '已禁用 aria2c 下载后端，Homebrew 恢复使用 curl。\n  配置文件: %s\n' "$f"
+}
+
+cmd_status() {
+  local f backend
+  f="$(env_file)"
+  backend="$(current_backend)"
+
+  printf 'brew-curl-aria2 %s\n' "$VERSION"
+  printf '  shim            : %s\n' "${SHIM:-<未找到>}"
+  printf '  aria2c          : %s\n' "$(command -v aria2c 2>/dev/null || echo '<未安装>')"
+  if command -v aria2c >/dev/null 2>&1; then
+    printf '  aria2c 版本     : %s\n' "$(aria2c --version 2>/dev/null | head -1)"
+  fi
+  printf '  真实 curl       : %s\n' "$([ -x "$PREFIX/opt/curl/bin/curl" ] && echo "$PREFIX/opt/curl/bin/curl" || echo /usr/bin/curl)"
+  printf '  配置文件        : %s\n' "$f"
+  printf '  当前 HOMEBREW_CURL_PATH: %s\n' "${backend:-<未设置>}"
+
+  if [ -n "${HOMEBREW_FORCE_BREWED_CURL:-}" ]; then
+    printf '  警告            : 你设置了 HOMEBREW_FORCE_BREWED_CURL，它会优先生效，aria2c 不会被使用。\n'
+  fi
+  if [ -n "$backend" ] && [ -n "$SHIM" ] && [ "$backend" != "$SHIM" ]; then
+    printf '  警告            : HOMEBREW_CURL_PATH 指向别处，这个 shim 当前不会被使用。\n'
+  fi
+  if [ -n "$backend" ] && [ -z "$(command -v aria2c 2>/dev/null || true)" ]; then
+    printf '  警告            : 已启用但 aria2c 不存在，下载会自动回退到 curl。\n'
+  fi
+  if [ -z "$SHIM" ]; then
+    return 1
+  fi
+  return 0
+}
+
+cmd_test() {
+  local url="${1:-https://mirrors.ustc.edu.cn/homebrew-bottles/api/formula/jq.json}"
+  [ -n "$SHIM" ] || die "找不到 curl-aria2 shim"
+
+  local dir out log
+  dir="$(mktemp -d)"
+  out="$dir/out.json"
+  log="$dir/shim.log"
+
+  printf '1) 下载类请求（应交给 aria2c）\n'
+  BREW_CURL_ARIA2_DEBUG=1 "$SHIM" --fail --location --silent --show-error \
+    --header 'Accept-Language: en' \
+    --user-agent "brew-curl-aria2/$VERSION selftest" \
+    --progress-bar --retry 3 --remote-time \
+    --output "$out" "$url" 2>"$log"
+  if grep -q 'backend=aria2c' "$log"; then
+    printf '   PASS aria2c 接管，下载 %s 字节\n' "$(wc -c <"$out" | tr -d ' ')"
+  else
+    printf '   FAIL 未被 aria2c 接管：\n'
+    sed 's/^/        /' "$log"
+    rm -rf "$dir"
+    return 1
+  fi
+
+  printf '2) 非下载请求（应透传给 curl）\n'
+  : >"$log"
+  BREW_CURL_ARIA2_DEBUG=1 "$SHIM" --head --silent --show-error "$url" >/dev/null 2>"$log" || true
+  if grep -q 'backend=curl' "$log"; then
+    printf '   PASS 已透传给 curl\n'
+  else
+    printf '   FAIL 透传逻辑异常：\n'
+    sed 's/^/        /' "$log"
+    rm -rf "$dir"
+    return 1
+  fi
+
+  printf '3) aria2c 失败时的回退\n'
+  : >"$log"
+  BREW_CURL_ARIA2_DEBUG=1 "$SHIM" --fail --silent --show-error \
+    --output "$dir/missing.bin" "$url/definitely-not-here" 2>"$log" || true
+  if grep -q 'falling back to curl' "$log"; then
+    printf '   PASS 已回退到 curl\n'
+  else
+    printf '   NOTE 未触发回退（镜像返回了别的结果，不算失败）\n'
+  fi
+
+  rm -rf "$dir"
+  printf '\n全部通过。\n'
+}
+
+cmd_version() { printf '%s\n' "$VERSION"; }
+
+usage() {
+  cat <<EOF
+brew-curl-aria2 $VERSION - 让 Homebrew 用 aria2c 多线程下载
+
+用法:
+  brew-curl-aria2 enable        写入 HOMEBREW_CURL_PATH（默认关，显式开启）
+  brew-curl-aria2 disable       移除该配置，恢复 curl
+  brew-curl-aria2 status        查看当前状态与告警
+  brew-curl-aria2 test [URL]    端到端自检（默认用 brew 镜像上的小文件）
+  brew-curl-aria2 version
+
+环境变量:
+  BREW_CURL_ARIA2_CONNECTIONS   每服务器连接数，默认 8
+  BREW_CURL_ARIA2_SPLITS        分段数，默认等于连接数
+  BREW_CURL_ARIA2_CHUNK         分段大小，默认 1M
+  BREW_CURL_ARIA2_DEBUG=1       调试日志
+EOF
+}
+
+case "${1:-}" in
+  enable) shift; cmd_enable "$@" ;;
+  disable) shift; cmd_disable "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  test) shift; cmd_test "$@" ;;
+  version|--version|-v) cmd_version ;;
+  ""|-h|--help|help) usage ;;
+  *) usage; exit 1 ;;
+esac

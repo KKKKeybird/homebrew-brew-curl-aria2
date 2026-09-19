@@ -1,0 +1,253 @@
+#!/bin/bash
+# curl-aria2 - a curl-compatible shim that routes file downloads through aria2c.
+#
+# Homebrew selects this script when HOMEBREW_CURL_PATH points at it:
+#   Library/Homebrew/utils/curl.sh  -> HOMEBREW_CURL="${HOMEBREW_CURL_PATH}"
+#   Library/Homebrew/shims/shared/curl -> execs "${HOMEBREW_CURL}"
+#
+# Safety model: anything this shim does not fully understand is handed to the
+# real curl unchanged, and every aria2c failure falls back to the real curl as
+# well. The worst case is therefore Homebrew's normal behaviour, never a broken
+# download.
+#
+# Tunables. Homebrew only forwards its own `HOMEBREW_*` variables to download
+# subprocesses, so the HOMEBREW_-prefixed spelling is the one that works from
+# Homebrew's brew.env file; the short spelling works from the calling shell for
+# direct/manual use.
+#   HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS  connections per server (-x), default 8
+#   HOMEBREW_BREW_CURL_ARIA2_SPLITS       parallel splits (-s), default = connections
+#   HOMEBREW_BREW_CURL_ARIA2_CHUNK        split size (-k), default 1M
+#   HOMEBREW_BREW_CURL_ARIA2_DEBUG=1      log backend decisions to stderr
+#   HOMEBREW_BREW_CURL_ARIA2_LOG=path     append backend decisions to a file
+#   HOMEBREW_BREW_CURL_ARIA2_PROGRESS     1/0 to force aria2c's console readout
+
+set -u
+
+orig=("$@")
+
+CONNECTIONS="${HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS:-${BREW_CURL_ARIA2_CONNECTIONS:-8}}"
+SPLITS="${HOMEBREW_BREW_CURL_ARIA2_SPLITS:-${BREW_CURL_ARIA2_SPLITS:-$CONNECTIONS}}"
+CHUNK="${HOMEBREW_BREW_CURL_ARIA2_CHUNK:-${BREW_CURL_ARIA2_CHUNK:-1M}}"
+DEBUG="${HOMEBREW_BREW_CURL_ARIA2_DEBUG:-${BREW_CURL_ARIA2_DEBUG:-}}"
+LOG="${HOMEBREW_BREW_CURL_ARIA2_LOG:-${BREW_CURL_ARIA2_LOG:-}}"
+PROGRESS="${HOMEBREW_BREW_CURL_ARIA2_PROGRESS:-${BREW_CURL_ARIA2_PROGRESS:-}}"
+
+log() {
+  if [ -n "$DEBUG" ]; then printf 'curl-aria2: %s\n' "$*" >&2; fi
+  if [ -n "$LOG" ]; then printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG" 2>/dev/null || true; fi
+}
+
+# --- locate the real curl (never ourselves) ---------------------------------
+self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+real_curl=""
+for candidate in "${HOMEBREW_PREFIX:-/opt/homebrew}/opt/curl/bin/curl" /usr/bin/curl; do
+  if [ -x "$candidate" ] && [ "$candidate" != "$self" ]; then
+    real_curl="$candidate"
+    break
+  fi
+done
+if [ -z "$real_curl" ]; then
+  candidate="$(command -v curl 2>/dev/null || true)"
+  if [ -n "$candidate" ] && [ "$candidate" != "$self" ]; then
+    real_curl="$candidate"
+  fi
+fi
+if [ -z "$real_curl" ]; then
+  printf 'curl-aria2: no usable curl found\n' >&2
+  exit 1
+fi
+
+to_curl() {
+  log "backend=curl reason=$1"
+  exec "$real_curl" "${orig[@]}"
+}
+
+# --- parse the arguments Homebrew passes to curl ----------------------------
+out=""
+url=""
+ua=""
+referer=""
+retry=""
+connect_timeout=""
+max_time=""
+speed_limit=""
+resume=0
+progress=0
+remote_time=0
+ca_cert=""
+create_dirs=0
+post=0
+head=0
+dump_header=0
+headers=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output|-o)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; out="$2"; shift 2 ;;
+    --user-agent|-A)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; ua="$2"; shift 2 ;;
+    --header|-H)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; headers[${#headers[@]}]="$2"; shift 2 ;;
+    --referer|-e)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; referer="$2"; shift 2 ;;
+    --retry)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; retry="$2"; shift 2 ;;
+    --retry-delay|--retry-max-time)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; shift 2 ;;
+    --retry-all-errors|--retry-connrefused)
+      shift ;;
+    --connect-timeout)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; connect_timeout="$2"; shift 2 ;;
+    --max-time|-m)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; max_time="$2"; shift 2 ;;
+    --speed-limit|-Y)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; speed_limit="$2"; shift 2 ;;
+    --speed-time|-y)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; shift 2 ;;
+    --cacert)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; ca_cert="$2"; shift 2 ;;
+    --capath|--cookie|-b|--cookie-jar|-c|-x|--proxy|--limit-rate)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; shift 2 ;;
+    --continue-at|-C)
+      resume=1; shift; if [ $# -gt 0 ] && [ "$1" = "-" ]; then shift; fi ;;
+    --data|--data-binary|--data-raw|--data-urlencode|-d|--form|-F)
+      post=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --request|-X)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"
+      case "$2" in
+        GET|get) shift 2 ;;
+        *) post=1; shift 2 ;;
+      esac ;;
+    --head|-I)
+      head=1; shift ;;
+    --dump-header|-D)
+      dump_header=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
+    --progress-bar)
+      progress=1; shift ;;
+    --remote-time|-R)
+      remote_time=1; shift ;;
+    --create-dirs)
+      create_dirs=1; shift ;;
+    -V|--version)
+      to_curl "version-query" ;;
+    --location|-L|--silent|-s|--show-error|-S|--disable|-q|--globoff|-g|--compressed|--http1.1|--http2|--http2-prior-knowledge|--fail|-f|--fail-with-body|--tlsv1.2|--tlsv1.3|--ipv4|--ipv6|--no-progress-meter)
+      shift ;;
+    --)
+      shift ;;
+    -*)
+      to_curl "unknown-option:$1" ;;
+    *)
+      url="$1"; shift ;;
+  esac
+done
+
+# --- decide whether this is a plain file download ---------------------------
+[ -n "$out" ] || to_curl "no-output-option"
+[ -n "$url" ] || to_curl "no-url"
+[ "$post" = 0 ] || to_curl "request-with-body"
+[ "$head" = 0 ] || to_curl "head-request"
+[ "$dump_header" = 0 ] || to_curl "header-dump"
+case "$url" in
+  http://*|https://*) ;;
+  *) to_curl "non-http-url" ;;
+esac
+
+# Homebrew runs download subprocesses with a filtered PATH that does not
+# include the prefix, so never rely on `command -v` alone here.
+aria2c=""
+for candidate in "${HOMEBREW_PREFIX:-/opt/homebrew}/bin/aria2c" \
+                 "${HOMEBREW_PREFIX:-/opt/homebrew}/opt/aria2/bin/aria2c"; do
+  if [ -x "$candidate" ]; then
+    aria2c="$candidate"
+    break
+  fi
+done
+if [ -z "$aria2c" ]; then
+  candidate="$(command -v aria2c 2>/dev/null || true)"
+  if [ -n "$candidate" ]; then
+    aria2c="$candidate"
+  fi
+fi
+[ -n "$aria2c" ] || to_curl "aria2c-not-installed"
+
+outdir="$(dirname "$out")"
+if [ ! -d "$outdir" ]; then
+  if [ "$create_dirs" = 1 ]; then
+    mkdir -p "$outdir" 2>/dev/null || to_curl "mkdir-failed"
+  else
+    to_curl "output-dir-missing"
+  fi
+fi
+[ -w "$outdir" ] || to_curl "output-dir-not-writable"
+
+# --- build the aria2c invocation -------------------------------------------
+args=(
+  -x "$CONNECTIONS"
+  -s "$SPLITS"
+  -k "$CHUNK"
+  --max-connection-per-server="$CONNECTIONS"
+  --dir="$outdir"
+  --out="$(basename "$out")"
+  --auto-file-renaming=false
+  --allow-overwrite=true
+  --file-allocation=none
+  --console-log-level=warn
+  --summary-interval=0
+  # keep aria2c's end-of-run result table out of Homebrew's stdout
+  --download-result=hide
+  # use the system resolver (what curl uses) instead of aria2c's own c-ares;
+  # on networks with split DNS / a transparent proxy, c-ares can fail to
+  # resolve hosts that every other tool resolves fine (aria2c exit code 19)
+  --async-dns=false
+)
+[ "$resume" = 1 ] && args+=(--continue=true)
+[ -n "$ua" ] && args+=("--user-agent=$ua")
+[ -n "$referer" ] && args+=("--referer=$referer")
+[ -n "$ca_cert" ] && args+=("--ca-certificate=$ca_cert")
+[ -n "$connect_timeout" ] && args+=("--connect-timeout=$connect_timeout")
+[ -n "$max_time" ] && args+=("--timeout=$max_time")
+[ -n "$speed_limit" ] && args+=("--lowest-speed-limit=$speed_limit")
+if [ -n "$retry" ]; then
+  args+=(--max-tries=$((retry + 1)) --retry-wait=1)
+fi
+[ "$remote_time" = 1 ] && args+=(--remote-time=true)
+for h in "${headers[@]}"; do
+  args+=("--header=$h")
+done
+show_readout=0
+if [ "$PROGRESS" = "1" ]; then
+  show_readout=1
+elif [ "$PROGRESS" != "0" ] && [ "$progress" = 1 ] && [ -t 1 ]; then
+  show_readout=1
+fi
+if [ "$show_readout" = 1 ]; then
+  args+=(--show-console-readout=true --truncate-console-readout=true)
+else
+  args+=(--show-console-readout=false)
+fi
+
+log "backend=aria2c url=$url out=$out connections=$CONNECTIONS"
+errfile=""
+if [ -n "$LOG" ] || [ -n "$DEBUG" ]; then
+  errfile="$(mktemp 2>/dev/null || true)"
+fi
+if [ -n "$errfile" ]; then
+  "$aria2c" "${args[@]}" -- "$url" 2>"$errfile"
+else
+  "$aria2c" "${args[@]}" -- "$url"
+fi
+rc=$?
+
+if [ "$rc" -ne 0 ] || [ ! -s "$out" ]; then
+  if [ -n "$errfile" ] && [ -s "$errfile" ]; then
+    log "aria2c stderr: $(tail -3 "$errfile" | tr '\n' ' ')"
+  fi
+  [ -n "$errfile" ] && rm -f "$errfile"
+  log "aria2c exit=$rc file=$([ -e "$out" ] && echo present || echo absent) -> falling back to curl"
+  exec "$real_curl" "${orig[@]}"
+fi
+[ -n "$errfile" ] && rm -f "$errfile"
+
+log "backend=aria2c ok bytes=$(wc -c <"$out" | tr -d ' ')"
+exit 0
