@@ -1,95 +1,62 @@
 # brew-curl-aria2
 
-让 Homebrew 用 **aria2c 多线程（分段）下载**代替单连接的 curl。
+English · [简体中文](README.zh-CN.md)
 
-Homebrew 的下载策略写死走 `Utils::Curl`：单个文件永远是**一条连接**。官方唯一的并行是
-`HOMEBREW_DOWNLOAD_CONCURRENCY`（`DownloadQueue`，2024 年加入），它只在**不同包之间**并行，
-对一个 595MB 的 cask 安装包没有任何帮助。上游也明确拒绝过引入其他下载器
-（[Homebrew/brew#14144](https://github.com/Homebrew/brew/issues/14144)，2022 年提出，次日关闭，
-维护者回复 "Sorry, not interested in supporting other downloaders or supporting multi-connection downloads."）。
+`brew-curl-aria2` is a third-party Homebrew tap that routes eligible file downloads through aria2c. It uses multiple HTTP connections for a single file when the server supports range requests. Other curl operations stay with curl.
 
-这个工具不 patch Homebrew，只用官方代码里已有的钩子：`HOMEBREW_CURL_PATH`。
+The project does not modify Homebrew's source code and does not run an aria2 daemon. It uses `HOMEBREW_CURL_PATH` to select a curl-compatible wrapper. Homebrew currently honors this setting on macOS, although its [environment reference](https://docs.brew.sh/Manpage#environment) documents the variable for Linux. Compatibility with future Homebrew releases is therefore not guaranteed.
 
-## 安装
+## Installation
 
 ```sh
 brew tap kkkkeybird/brew-curl-aria2
-brew install brew-curl-aria2        # 自动依赖 aria2
-
-brew-curl-aria2 enable              # 显式开启（默认不改你的配置）
-brew-curl-aria2 test                # 端到端自检
-brew-curl-aria2 status              # 查看状态与告警
+brew install brew-curl-aria2
+brew-curl-aria2 enable
+brew-curl-aria2 test
+brew-curl-aria2 status
 ```
 
-之后正常 `brew upgrade --cask <名字>` 即可。
+The formula installs aria2 as a dependency. Installation alone does not change Homebrew's download behavior; `enable` writes the wrapper path to Homebrew's user environment file. The location is `$XDG_CONFIG_HOME/homebrew/brew.env` when `XDG_CONFIG_HOME` is set, or `~/.homebrew/brew.env` otherwise.
 
-## 实测效果（2026-09，macOS 27 / 路由器 OpenClash 出口）
+Continue to use normal Homebrew commands, such as `brew upgrade --cask <name>`. Already cached files do not need another download.
 
-| 对象 | curl 单连接 | aria2c -x8 | 提升 |
-|---|---|---|---|
-| ChatGPT 595MB cask | 44.2s (13.5 MB/s) | **28.1s (21 MB/s)** | 1.6x |
-| Codex 123MB cask | ~19s | ~15s | ~1.3x |
+## Request handling
 
-收益取决于瓶颈：**每连接被限速时收益最大**（实测过 6x 的场景），链路总带宽已到顶时收益接近 0。
+The wrapper attempts aria2c only for a new HTTP(S) file download with curl options it can translate. It defaults to eight connections and eight splits. Requests for headers, version information, request bodies, existing files, and curl options with different semantics are forwarded unchanged to curl. Examples include explicit proxy or cookie settings, protocol and IP-family restrictions, and resume requests.
 
-## 它到底改了什么
+If aria2c fails or produces an empty file, the wrapper removes the files created by that attempt and retries the original command with curl. Homebrew's own checksum verification still applies to downloaded formula and cask files.
 
-只有一行，写进 Homebrew 的用户级环境文件（`$XDG_CONFIG_HOME/homebrew/brew.env`，
-否则 `~/.homebrew/brew.env`）：
+Connection splitting can help when a server limits throughput per connection. It may provide no benefit when the network link is already saturated, and some servers do not support range requests. aria2c uses HTTP/1.1; curl may negotiate HTTP/2 or HTTP/3.
+
+## Configuration
+
+Set these variables in Homebrew's user environment file:
 
 ```sh
-HOMEBREW_CURL_PATH=/opt/homebrew/opt/brew-curl-aria2/libexec/curl-aria2
+HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS=8
+HOMEBREW_BREW_CURL_ARIA2_SPLITS=8
+HOMEBREW_BREW_CURL_ARIA2_CHUNK=1M
 ```
 
-对应 Homebrew 官方代码：
+For troubleshooting, set `HOMEBREW_BREW_CURL_ARIA2_DEBUG=1` to log routing decisions to stderr, or `HOMEBREW_BREW_CURL_ARIA2_LOG=/path/to/log` to append them to a file. `HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` enables aria2c's console readout, although Homebrew may capture it. Direct invocation of the wrapper also accepts the same names without the `HOMEBREW_` prefix.
 
-- `Library/Homebrew/utils/curl.sh`：`HOMEBREW_CURL_PATH` → `HOMEBREW_CURL`
-- `Library/Homebrew/shims/shared/curl`：执行 `${HOMEBREW_CURL}`
-- macOS 上 `check-curl-version()` 直接返回，不校验版本
+`brew-curl-aria2 enable` refuses to replace an existing, different `HOMEBREW_CURL_PATH`. `disable` removes only this project's setting. If `HOMEBREW_FORCE_BREWED_CURL` is set, Homebrew gives the brewed curl precedence.
 
-`brew-curl-aria2 disable` 只删除本插件写入的这一行。若配置文件原本指向其他 curl，
-`enable` 会提示你先处理该配置，不会覆盖它。
-
-## 为什么不做成 Homebrew 本体里的模块
-
-- 上游没有第三方下载后端机制，且**明确拒绝**支持其他下载器（#14144）；
-- `$(brew --prefix)/Library/Homebrew` 是 git 仓库，`brew update` 会覆盖你塞进去的东西；
-- 所以正规做法就是 tap + formula + 官方 `HOMEBREW_CURL_PATH` 钩子。
-
-## 调参
-
-Homebrew **只把 `HOMEBREW_*` 变量传给下载子进程**，所以要用带前缀的写法（可写进 `~/.homebrew/brew.env`）：
+## Verification and development
 
 ```sh
-HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS=16   # 每服务器连接数（默认 8）
-HOMEBREW_BREW_CURL_ARIA2_SPLITS=16        # 分段数（默认等于连接数）
-HOMEBREW_BREW_CURL_ARIA2_CHUNK=4M         # 分段大小（默认 1M）
-HOMEBREW_BREW_CURL_ARIA2_DEBUG=1          # 决策日志打到 stderr
-HOMEBREW_BREW_CURL_ARIA2_LOG=/tmp/aria2.log  # 决策日志写文件（排障用）
-HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1       # 打开 aria2c 进度读数
+brew-curl-aria2 status
+brew-curl-aria2 test
+bash test/shim.bash
 ```
 
-直接手动调用 shim 时，短名 `BREW_CURL_ARIA2_*` 也可用。
+The self-test downloads a small file and checks both aria2c routing and curl pass-through. The repository test uses mock executables and runs in CI on macOS and Linux.
 
-## 安全设计
+## Releases
 
-1. **只接管可兼容的请求**：新的 HTTP(S) 文件下载才尝试 aria2c。
-   `--head`、`--dump-header`、`--write-out`、POST 等请求交给 curl；显式代理、
-   非默认 Cookie、IPv4/IPv6 限制、TLS/HTTP 版本限制、续传及其他无法等价转换的选项也交给 curl。
-2. **aria2c 失败就重试 curl**：先清理本次生成的分段文件及 `.aria2` 状态文件，
-   再用原始参数运行 curl，避免 curl 从不连续的分段数据续传。
-3. **只写一行配置**：`disable` 删除本插件配置；卸载前先执行 `disable`。
+Maintainers can run the **Release** workflow in GitHub Actions with a new `major.minor.patch` version. It runs the tests, builds a reproducible source archive, updates the CLI version and Formula URL/checksum, creates a version tag, and publishes the archive in a GitHub Release. The release workflow is intentional and does not run on every commit to `main`.
 
-## 已知差异与注意
-
-- aria2c 用 HTTP/1.1（curl 可能 HTTP/2），对镜像站与厂商 CDN 无实质影响。
-- 已默认 `--async-dns=false`：使用系统解析器，避免透明代理/split-DNS 环境下 c-ares 解析失败。
-- aria2c 成功完成后通常会移除 `.aria2` 状态文件；失败时本插件清理本次生成的状态文件。
-- Homebrew 已有的部分文件由 curl 处理，以保留原有的续传语义。
-- 依赖服务器支持 Range 请求；不支持时 aria2c 失败并回退 curl。
-- Homebrew 会捕获下载输出，因此进度条通常不可见（用 `HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` 试）。
-
-## 卸载
+## Removal
 
 ```sh
 brew-curl-aria2 disable
@@ -97,6 +64,8 @@ brew uninstall brew-curl-aria2
 brew untap kkkkeybird/brew-curl-aria2
 ```
 
+Run `disable` before uninstalling so that `HOMEBREW_CURL_PATH` does not point to a removed executable.
+
 ## License
 
-MIT
+MIT. This project is not affiliated with Homebrew or aria2.
