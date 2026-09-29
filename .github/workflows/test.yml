@@ -1,0 +1,16 @@
+name: Test shim
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shim:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test curl routing and fallback
+        run: bash test/shim.bash

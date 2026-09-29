@@ -5,10 +5,8 @@
 #   Library/Homebrew/utils/curl.sh  -> HOMEBREW_CURL="${HOMEBREW_CURL_PATH}"
 #   Library/Homebrew/shims/shared/curl -> execs "${HOMEBREW_CURL}"
 #
-# Safety model: anything this shim does not fully understand is handed to the
-# real curl unchanged, and every aria2c failure falls back to the real curl as
-# well. The worst case is therefore Homebrew's normal behaviour, never a broken
-# download.
+# Safety model: only curl options whose behavior we can preserve are routed to
+# aria2c. Everything else is handed to the real curl unchanged.
 #
 # Tunables. Homebrew only forwards its own `HOMEBREW_*` variables to download
 # subprocesses, so the HOMEBREW_-prefixed spelling is the one that works from
@@ -69,9 +67,7 @@ ua=""
 referer=""
 retry=""
 connect_timeout=""
-max_time=""
-speed_limit=""
-resume=0
+location=0
 progress=0
 remote_time=0
 ca_cert=""
@@ -80,37 +76,44 @@ post=0
 head=0
 dump_header=0
 headers=()
+header_count=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --output|-o)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; out="$2"; shift 2 ;;
+      [ $# -gt 1 ] || to_curl "missing-value:$1"
+      [ -z "$out" ] || to_curl "multiple-outputs"
+      out="$2"; shift 2 ;;
     --user-agent|-A)
       [ $# -gt 1 ] || to_curl "missing-value:$1"; ua="$2"; shift 2 ;;
     --header|-H)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; headers[${#headers[@]}]="$2"; shift 2 ;;
+      [ $# -gt 1 ] || to_curl "missing-value:$1"
+      headers[header_count]="$2"
+      header_count=$((header_count + 1))
+      shift 2 ;;
     --referer|-e)
       [ $# -gt 1 ] || to_curl "missing-value:$1"; referer="$2"; shift 2 ;;
     --retry)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; retry="$2"; shift 2 ;;
-    --retry-delay|--retry-max-time)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; shift 2 ;;
-    --retry-all-errors|--retry-connrefused)
-      shift ;;
+      [ $# -gt 1 ] || to_curl "missing-value:$1"
+      case "$2" in ''|*[!0-9]*) to_curl "invalid-retry" ;; esac
+      retry="$2"; shift 2 ;;
+    --retry-delay|--retry-max-time|--max-time|-m|--speed-limit|-Y|--speed-time|-y)
+      to_curl "unsupported-option:$1" ;;
     --connect-timeout)
       [ $# -gt 1 ] || to_curl "missing-value:$1"; connect_timeout="$2"; shift 2 ;;
-    --max-time|-m)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; max_time="$2"; shift 2 ;;
-    --speed-limit|-Y)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; speed_limit="$2"; shift 2 ;;
-    --speed-time|-y)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; shift 2 ;;
     --cacert)
       [ $# -gt 1 ] || to_curl "missing-value:$1"; ca_cert="$2"; shift 2 ;;
-    --capath|--cookie|-b|--cookie-jar|-c|-x|--proxy|--limit-rate)
-      [ $# -gt 1 ] || to_curl "missing-value:$1"; shift 2 ;;
+    --cookie)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"
+      # Homebrew normally passes /dev/null to start with an empty cookie jar.
+      [ "$2" = /dev/null ] || to_curl "unsupported-cookie"
+      shift 2 ;;
+    --capath|-b|--cookie-jar|-c|-x|--proxy|--limit-rate)
+      to_curl "unsupported-option:$1" ;;
     --continue-at|-C)
-      resume=1; shift; if [ $# -gt 0 ] && [ "$1" = "-" ]; then shift; fi ;;
+      # An existing file may contain non-contiguous aria2c pieces. Let curl
+      # handle every resume request using its original arguments.
+      to_curl "resume-request" ;;
     --data|--data-binary|--data-raw|--data-urlencode|-d|--form|-F)
       post=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --request|-X)
@@ -131,20 +134,27 @@ while [ $# -gt 0 ]; do
       create_dirs=1; shift ;;
     -V|--version)
       to_curl "version-query" ;;
-    --location|-L|--silent|-s|--show-error|-S|--disable|-q|--globoff|-g|--compressed|--http1.1|--http2|--http2-prior-knowledge|--fail|-f|--fail-with-body|--tlsv1.2|--tlsv1.3|--ipv4|--ipv6|--no-progress-meter)
+    --compressed|--http2|--http2-prior-knowledge|--tlsv1.2|--tlsv1.3|--ipv4|--ipv6|--retry-all-errors|--retry-connrefused|--fail-with-body)
+      to_curl "unsupported-option:$1" ;;
+    --location|-L)
+      location=1; shift ;;
+    --silent|-s|--show-error|-S|--disable|-q|--globoff|-g|--http1.1|--fail|-f|--no-progress-meter)
       shift ;;
     --)
       shift ;;
     -*)
       to_curl "unknown-option:$1" ;;
     *)
+      [ -z "$url" ] || to_curl "multiple-urls"
       url="$1"; shift ;;
   esac
 done
 
 # --- decide whether this is a plain file download ---------------------------
 [ -n "$out" ] || to_curl "no-output-option"
+[ "$out" != - ] || to_curl "stdout-output"
 [ -n "$url" ] || to_curl "no-url"
+[ "$location" = 1 ] || to_curl "no-location-option"
 [ "$post" = 0 ] || to_curl "request-with-body"
 [ "$head" = 0 ] || to_curl "head-request"
 [ "$dump_header" = 0 ] || to_curl "header-dump"
@@ -180,6 +190,8 @@ if [ ! -d "$outdir" ]; then
   fi
 fi
 [ -w "$outdir" ] || to_curl "output-dir-not-writable"
+[ ! -e "$out" ] && [ ! -L "$out" ] || to_curl "existing-output"
+[ ! -e "$out.aria2" ] && [ ! -L "$out.aria2" ] || to_curl "existing-aria2-state"
 
 # --- build the aria2c invocation -------------------------------------------
 args=(
@@ -196,25 +208,25 @@ args=(
   --summary-interval=0
   # keep aria2c's end-of-run result table out of Homebrew's stdout
   --download-result=hide
+  --load-cookies=/dev/null
   # use the system resolver (what curl uses) instead of aria2c's own c-ares;
   # on networks with split DNS / a transparent proxy, c-ares can fail to
   # resolve hosts that every other tool resolves fine (aria2c exit code 19)
   --async-dns=false
 )
-[ "$resume" = 1 ] && args+=(--continue=true)
 [ -n "$ua" ] && args+=("--user-agent=$ua")
 [ -n "$referer" ] && args+=("--referer=$referer")
 [ -n "$ca_cert" ] && args+=("--ca-certificate=$ca_cert")
 [ -n "$connect_timeout" ] && args+=("--connect-timeout=$connect_timeout")
-[ -n "$max_time" ] && args+=("--timeout=$max_time")
-[ -n "$speed_limit" ] && args+=("--lowest-speed-limit=$speed_limit")
 if [ -n "$retry" ]; then
   args+=(--max-tries=$((retry + 1)) --retry-wait=1)
 fi
 [ "$remote_time" = 1 ] && args+=(--remote-time=true)
-for h in "${headers[@]}"; do
-  args+=("--header=$h")
-done
+if [ "$header_count" -gt 0 ]; then
+  for h in "${headers[@]}"; do
+    args+=("--header=$h")
+  done
+fi
 show_readout=0
 if [ "$PROGRESS" = "1" ]; then
   show_readout=1
@@ -244,6 +256,9 @@ if [ "$rc" -ne 0 ] || [ ! -s "$out" ]; then
     log "aria2c stderr: $(tail -3 "$errfile" | tr '\n' ' ')"
   fi
   [ -n "$errfile" ] && rm -f "$errfile"
+  # The output did not exist before this attempt. Do not let curl resume from
+  # aria2c's potentially sparse, non-contiguous partial file.
+  rm -f -- "$out" "$out.aria2"
   log "aria2c exit=$rc file=$([ -e "$out" ] && echo present || echo absent) -> falling back to curl"
   exec "$real_curl" "${orig[@]}"
 fi
