@@ -46,7 +46,7 @@ jobs:
               exit 1
             fi
             git fetch origin "refs/tags/$tag:refs/tags/$tag"
-            test "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)"
+            git merge-base --is-ancestor "$tag^{commit}" HEAD
           else
             git add Formula/brew-curl-aria2.rb bin/brew-curl-aria2
             git commit -m "Release $tag"
@@ -54,7 +54,10 @@ jobs:
             git push --atomic origin HEAD:refs/heads/main "refs/tags/$tag"
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists"
+            expected_digest="sha256:$(sha256sum "$archive" | cut -d' ' -f1)"
+            published_digest="$(gh release view "$tag" --json assets --jq ".assets[] | select(.name == \"$(basename "$archive")\") | .digest")"
+            test "$published_digest" = "$expected_digest"
+            echo "Release $tag already exists with matching archive"
           else
             gh release create "$tag" "$archive" --verify-tag --generate-notes --title "$tag"
           fi
