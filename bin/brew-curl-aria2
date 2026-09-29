@@ -56,12 +56,21 @@ cmd_enable() {
   [ -n "$SHIM" ] || die "找不到 curl-aria2 shim，请先 brew install brew-curl-aria2"
   command -v aria2c >/dev/null 2>&1 || die "缺少 aria2c，请先 brew install aria2"
 
-  local f dir tmp
+  local f dir tmp existing
   f="$(env_file)"
   dir="$(dirname "$f")"
   mkdir -p "$dir" || die "无法创建 $dir"
   [ -e "$f" ] || : >"$f"
   [ -w "$f" ] || die "$f 不可写"
+
+  existing="$(grep '^HOMEBREW_CURL_PATH=' "$f" 2>/dev/null || true)"
+  if [ -n "$existing" ] && [ "$existing" != "HOMEBREW_CURL_PATH=$SHIM" ]; then
+    die "$f 已设置其他 HOMEBREW_CURL_PATH；请先自行处理该配置"
+  fi
+  if [ "$existing" = "HOMEBREW_CURL_PATH=$SHIM" ]; then
+    printf '已启用 aria2c 下载后端（配置未变）。\n'
+    return 0
+  fi
 
   tmp="$(mktemp)"
   grep -v '^HOMEBREW_CURL_PATH=' "$f" >"$tmp" 2>/dev/null || true
@@ -77,16 +86,22 @@ cmd_enable() {
 }
 
 cmd_disable() {
-  local f tmp
+  local f tmp expected
   f="$(env_file)"
   [ -f "$f" ] || { printf '未启用（%s 不存在）。\n' "$f"; return 0; }
 
+  expected="HOMEBREW_CURL_PATH=${SHIM:-$PREFIX/opt/brew-curl-aria2/libexec/curl-aria2}"
+  if ! grep -Fxq "$expected" "$f"; then
+    printf '未启用（%s 没有本插件的配置）。\n' "$f"
+    return 0
+  fi
+
   tmp="$(mktemp)"
-  grep -v '^HOMEBREW_CURL_PATH=' "$f" >"$tmp" 2>/dev/null || true
+  grep -Fvx "$expected" "$f" >"$tmp" 2>/dev/null || true
   cat "$tmp" >"$f"
   rm -f "$tmp"
 
-  printf '已禁用 aria2c 下载后端，Homebrew 恢复使用 curl。\n  配置文件: %s\n' "$f"
+  printf '已禁用 aria2c 下载后端。\n  配置文件: %s\n' "$f"
 }
 
 cmd_status() {

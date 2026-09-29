@@ -47,7 +47,8 @@ HOMEBREW_CURL_PATH=/opt/homebrew/opt/brew-curl-aria2/libexec/curl-aria2
 - `Library/Homebrew/shims/shared/curl`：执行 `${HOMEBREW_CURL}`
 - macOS 上 `check-curl-version()` 直接返回，不校验版本
 
-`brew-curl-aria2 disable` 删掉这一行即完全恢复。
+`brew-curl-aria2 disable` 只删除本插件写入的这一行。若配置文件原本指向其他 curl，
+`enable` 会提示你先处理该配置，不会覆盖它。
 
 ## 为什么不做成 Homebrew 本体里的模块
 
@@ -72,17 +73,19 @@ HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1       # 打开 aria2c 进度读数
 
 ## 安全设计
 
-1. **不认识就交回 curl**：只有「带 `--output` 的普通 http(s) 下载」才走 aria2c；
-   `--head`、`--dump-header`、`--write-out`、`--request`、POST/analytics、`-V` 全部原样透传。
-2. **aria2c 非 0 退出或产物为空 → 用原始参数重跑 curl**，错误语义与官方一致（实测触发过：
-   aria2c 因 c-ares DNS 解析失败退出 19，curl 立即接管完成下载）。
-3. **只写一行配置**，`disable` / `brew uninstall` 即可完全恢复。
+1. **只接管可兼容的请求**：新的 HTTP(S) 文件下载才尝试 aria2c。
+   `--head`、`--dump-header`、`--write-out`、POST 等请求交给 curl；显式代理、
+   非默认 Cookie、IPv4/IPv6 限制、TLS/HTTP 版本限制、续传及其他无法等价转换的选项也交给 curl。
+2. **aria2c 失败就重试 curl**：先清理本次生成的分段文件及 `.aria2` 状态文件，
+   再用原始参数运行 curl，避免 curl 从不连续的分段数据续传。
+3. **只写一行配置**：`disable` 删除本插件配置；卸载前先执行 `disable`。
 
 ## 已知差异与注意
 
 - aria2c 用 HTTP/1.1（curl 可能 HTTP/2），对镜像站与厂商 CDN 无实质影响。
 - 已默认 `--async-dns=false`：使用系统解析器，避免透明代理/split-DNS 环境下 c-ares 解析失败。
-- aria2c 失败会留下 `<文件>.aria2` 控制文件用于续传，`brew cleanup` 不清理它，属正常。
+- aria2c 成功完成后通常会移除 `.aria2` 状态文件；失败时本插件清理本次生成的状态文件。
+- Homebrew 已有的部分文件由 curl 处理，以保留原有的续传语义。
 - 依赖服务器支持 Range 请求；不支持时 aria2c 失败并回退 curl。
 - Homebrew 会捕获下载输出，因此进度条通常不可见（用 `HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` 试）。
 
