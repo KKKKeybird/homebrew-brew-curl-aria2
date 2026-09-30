@@ -56,6 +56,20 @@ if [ -z "$real_curl" ]; then
 fi
 
 to_curl() {
+  # Never ask curl to resume an old aria2 sparse file. Inspect the original
+  # arguments because routing can occur before argument parsing is complete.
+  local i destination="" resume_arg=""
+  for ((i=0; i<${#orig[@]}; i++)); do
+    case "${orig[i]}" in
+      --output|-o) destination="${orig[i+1]:-}" ;;
+      --continue-at|-C) resume_arg="${orig[i+1]:-}" ;;
+    esac
+  done
+  if [ -n "$resume_arg" ] && [ -n "$destination" ] && [ -e "$destination.aria2" ]; then
+    log "backend=curl blocked reason=$1 legacy-aria2-state"
+    printf 'curl-aria2: cannot resume aria2 pieces with curl (%s); retained download state\n' "$1" >&2
+    exit 1
+  fi
   log "backend=curl reason=$1"
   exec "$real_curl" "${orig[@]}"
 }
@@ -75,6 +89,7 @@ create_dirs=0
 post=0
 head=0
 dump_header=0
+resume=0
 headers=()
 header_count=0
 
@@ -111,9 +126,11 @@ while [ $# -gt 0 ]; do
     --capath|-b|--cookie-jar|-c|-x|--proxy|--limit-rate)
       to_curl "unsupported-option:$1" ;;
     --continue-at|-C)
-      # An existing file may contain non-contiguous aria2c pieces. Let curl
-      # handle every resume request using its original arguments.
-      to_curl "resume-request" ;;
+      [ $# -gt 1 ] || to_curl "missing-value:$1"
+      # aria2 can infer the offset of a sequential file or read its own pieces.
+      # Explicit numeric curl offsets have different semantics.
+      [ "$2" = - ] || to_curl "explicit-resume-offset"
+      resume=1; shift 2 ;;
     --data|--data-binary|--data-raw|--data-urlencode|-d|--form|-F)
       post=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --request|-X)
@@ -190,8 +207,45 @@ if [ ! -d "$outdir" ]; then
   fi
 fi
 [ -w "$outdir" ] || to_curl "output-dir-not-writable"
-[ ! -e "$out" ] && [ ! -L "$out" ] || to_curl "existing-output"
-[ ! -e "$out.aria2" ] && [ ! -L "$out.aria2" ] || to_curl "existing-aria2-state"
+if [ -e "$out" ] || [ -L "$out" ]; then
+  [ "$resume" = 1 ] || to_curl "existing-output"
+  [ -f "$out" ] && [ ! -L "$out" ] || to_curl "unsupported-output-type"
+fi
+if [ -e "$out.aria2" ] || [ -L "$out.aria2" ]; then
+  [ "$resume" = 1 ] && [ -f "$out" ] && [ -f "$out.aria2" ] && [ ! -L "$out.aria2" ] || to_curl "existing-aria2-state"
+fi
+
+# Keep aria2's sparse file away from Homebrew's destination. Homebrew may
+# treat a partial file whose apparent size equals Content-Length as complete.
+# The destination remains a contiguous curl partial until publication.
+workdir="$out.aria2-work"
+if [ -e "$workdir" ] || [ -L "$workdir" ]; then
+  [ -d "$workdir" ] && [ ! -L "$workdir" ] || to_curl "unsupported-workdir"
+  [ -f "$workdir/url" ] && [ ! -L "$workdir/url" ] || to_curl "unrecognized-workdir"
+  [ "$(cat "$workdir/url")" = "$url" ] || to_curl "workdir-url-mismatch"
+  resume=1
+else
+  mkdir -m 700 -- "$workdir" || to_curl "workdir-create-failed"
+  (umask 077; printf '%s\n' "$url" >"$workdir/url") || to_curl "workdir-url-write-failed"
+  if [ "$resume" = 1 ] && [ -f "$out" ]; then
+    # APFS cloning avoids copying a large sequential partial on macOS.
+    if ! cp -c -p -- "$out" "$workdir/data" 2>/dev/null; then
+      cp -p -- "$out" "$workdir/data" || to_curl "resume-copy-failed"
+    fi
+    if [ -f "$out.aria2" ]; then
+      cp -p -- "$out.aria2" "$workdir/data.aria2" || to_curl "state-copy-failed"
+    fi
+  fi
+fi
+for staged in "$workdir/data" "$workdir/data.aria2"; do
+  if [ -L "$staged" ] || { [ -e "$staged" ] && [ ! -f "$staged" ]; }; then
+    to_curl "unsupported-staged-file"
+  fi
+done
+cleanup_workdir() {
+  rm -f -- "$workdir/data" "$workdir/data.aria2" "$workdir/url"
+  rmdir -- "$workdir" 2>/dev/null || true
+}
 
 # --- build the aria2c invocation -------------------------------------------
 args=(
@@ -199,8 +253,11 @@ args=(
   -s "$SPLITS"
   -k "$CHUNK"
   --max-connection-per-server="$CONNECTIONS"
-  --dir="$outdir"
-  --out="$(basename "$out")"
+  --dir="$workdir"
+  --out=data
+  --continue=true
+  --always-resume=true
+  --auto-save-interval=1
   --auto-file-renaming=false
   --allow-overwrite=true
   --file-allocation=none
@@ -239,30 +296,52 @@ else
   args+=(--show-console-readout=false)
 fi
 
-log "backend=aria2c url=$url out=$out connections=$CONNECTIONS"
+log "backend=aria2c url=$url out=$out connections=$CONNECTIONS resume=$resume"
 errfile=""
 if [ -n "$LOG" ] || [ -n "$DEBUG" ]; then
   errfile="$(mktemp 2>/dev/null || true)"
 fi
-if [ -n "$errfile" ]; then
-  "$aria2c" "${args[@]}" -- "$url" 2>"$errfile"
-else
-  "$aria2c" "${args[@]}" -- "$url"
-fi
+run_aria2() {
+  if [ -n "$errfile" ]; then
+    "$aria2c" "${args[@]}" -- "$url" 2>"$errfile"
+  else
+    "$aria2c" "${args[@]}" -- "$url"
+  fi
+}
+run_aria2
 rc=$?
+if [ "$rc" = 8 ]; then
+  # Invalid/unsupported range response: start a single aria2 stream from zero.
+  # Only staged files are discarded; the original partial remains untouched.
+  log "range-unsupported -> restarting aria2c with one connection"
+  rm -f -- "$workdir/data" "$workdir/data.aria2"
+  args+=(--continue=false -x 1 -s 1 --max-connection-per-server=1)
+  run_aria2
+  rc=$?
+fi
 
-if [ "$rc" -ne 0 ] || [ ! -s "$out" ]; then
+if [ "$rc" -ne 0 ] || [ ! -s "$workdir/data" ] || [ -e "$workdir/data.aria2" ]; then
   if [ -n "$errfile" ] && [ -s "$errfile" ]; then
     log "aria2c stderr: $(tail -3 "$errfile" | tr '\n' ' ')"
   fi
   [ -n "$errfile" ] && rm -f "$errfile"
-  # The output did not exist before this attempt. Do not let curl resume from
-  # aria2c's potentially sparse, non-contiguous partial file.
-  rm -f -- "$out" "$out.aria2"
-  log "aria2c exit=$rc file=$([ -e "$out" ] && echo present || echo absent) -> falling back to curl"
-  exec "$real_curl" "${orig[@]}"
+  # The original curl destination is unchanged, so curl can safely resume it.
+  # Keep aria2 pieces if curl also fails; the next attempt resumes those pieces.
+  log "aria2c exit=$rc -> falling back to curl (staged progress retained)"
+  if [ -e "$out.aria2" ]; then
+    printf 'curl-aria2: aria2 download incomplete; retained pieces for retry\n' >&2
+    [ "$rc" -ne 0 ] || rc=1
+    exit "$rc"
+  fi
+  "$real_curl" "${orig[@]}"
+  rc=$?
+  [ "$rc" -ne 0 ] || cleanup_workdir
+  exit "$rc"
 fi
 [ -n "$errfile" ] && rm -f "$errfile"
 
+mv -f -- "$workdir/data" "$out" || exit 1
+rm -f -- "$out.aria2"
+cleanup_workdir
 log "backend=aria2c ok bytes=$(wc -c <"$out" | tr -d ' ')"
 exit 0

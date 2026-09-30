@@ -14,5 +14,13 @@ jobs:
       - uses: actions/checkout@v7
       - name: Test curl routing and fallback
         run: bash test/shim.bash
+      - name: Install aria2 (macOS)
+        if: runner.os == 'macOS'
+        run: brew install aria2
+      - name: Install aria2 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y aria2
+      - name: Test actual aria2 resume and file integrity
+        run: python3 test/resume.py
       - name: Test release packaging
         run: python3 test/release.py

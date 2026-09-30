@@ -22,9 +22,9 @@ Formula 会自动安装 aria2 依赖。单独安装不会改变 Homebrew 的下�
 
 ## 请求处理
 
-只有带有可转换 curl 参数的全新 HTTP(S) 文件下载会尝试 aria2c。默认使用 8 个连接和 8 个分段。获取响应头、查询版本、提交请求体、下载到已有文件，以及使用语义不同的 curl 参数时，原命令会交给 curl。显式代理或 Cookie、协议及 IP 地址族限制、续传请求都属于后一类。
+带有可转换 curl 参数的 HTTP(S) 文件下载和续传会优先使用 aria2c。默认使用 8 个连接和 8 个分段。获取响应头、查询版本、提交请求体、未指定续传时覆盖已有文件，以及使用语义不同的 curl 参数时，原命令会交给 curl。显式代理或 Cookie、协议及 IP 地址族限制、指定数字偏移的续传请求都属于后一类。Homebrew 的自动续传参数 `--continue-at -` 会交给 aria2c。
 
-aria2c 失败或生成空文件时，脚本会清理本次创建的文件，再用原始参数运行 curl。Homebrew 对 formula 和 cask 下载文件的校验仍然生效。
+aria2c 在独立的 `<输出路径>.aria2-work` 目录中下载，完成后才把文件交给 Homebrew。它可以续传 curl 的连续部分文件，也可以恢复自己的分段进度。aria2c 失败时，脚本会用原始参数运行 curl，保留原来的连续部分文件。如果两者都失败，aria2 的分段进度会保留到下次尝试；下载成功后会清理。服务器拒绝 Range 请求时，会先让 aria2c 用单连接重新下载，失败后才回退 curl。旧版 `.aria2` 分段文件只会交给 aria2c 续传，不会交给 curl。Homebrew 对 formula 和 cask 下载文件的校验仍然生效。
 
 如果服务器对单连接限速，多连接可能提升速度；链路已满载时可能没有收益。部分服务器不支持 Range 请求。aria2c 使用 HTTP/1.1，而 curl 可能协商 HTTP/2 或 HTTP/3。
 
@@ -48,6 +48,7 @@ HOMEBREW_BREW_CURL_ARIA2_CHUNK=1M
 brew-curl-aria2 status
 brew-curl-aria2 test
 bash test/shim.bash
+python3 test/resume.py
 ```
 
 自检命令会下载小文件，并检查 aria2c 分流与 curl 透传。仓库测试使用模拟可执行文件，在 macOS 和 Linux CI 中运行。

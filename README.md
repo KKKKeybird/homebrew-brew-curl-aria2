@@ -22,9 +22,9 @@ Continue to use normal Homebrew commands, such as `brew upgrade --cask <name>`. 
 
 ## Request handling
 
-The wrapper attempts aria2c only for a new HTTP(S) file download with curl options it can translate. It defaults to eight connections and eight splits. Requests for headers, version information, request bodies, existing files, and curl options with different semantics are forwarded unchanged to curl. Examples include explicit proxy or cookie settings, protocol and IP-family restrictions, and resume requests.
+The wrapper attempts aria2c for a new or resumed HTTP(S) file download with curl options it can translate. It defaults to eight connections and eight splits. Requests for headers, version information, request bodies, overwriting existing files without a resume request, and curl options with different semantics are forwarded unchanged to curl. Examples include explicit proxy or cookie settings, protocol and IP-family restrictions, and explicit numeric resume offsets. Homebrew’s automatic `--continue-at -` requests use aria2c.
 
-If aria2c fails or produces an empty file, the wrapper removes the files created by that attempt and retries the original command with curl. Homebrew's own checksum verification still applies to downloaded formula and cask files.
+aria2c downloads into a private `<output>.aria2-work` directory and publishes the file only after completion. It can resume a sequential curl partial or its own saved pieces. If aria2c fails, the wrapper retries the original command with curl against the untouched destination. If both fail, the saved aria2 pieces remain for the next attempt; they are removed after a successful download. If the server rejects range requests, aria2c retries from the beginning with one connection before falling back to curl. Legacy `.aria2` files are resumed with aria2c and are never handed to curl for continuation. Homebrew's own checksum verification still applies to downloaded formula and cask files.
 
 Connection splitting can help when a server limits throughput per connection. It may provide no benefit when the network link is already saturated, and some servers do not support range requests. aria2c uses HTTP/1.1; curl may negotiate HTTP/2 or HTTP/3.
 
@@ -48,9 +48,10 @@ For troubleshooting, set `HOMEBREW_BREW_CURL_ARIA2_DEBUG=1` to log routing decis
 brew-curl-aria2 status
 brew-curl-aria2 test
 bash test/shim.bash
+python3 test/resume.py
 ```
 
-The self-test downloads a small file and checks both aria2c routing and curl pass-through. The repository test uses mock executables and runs in CI on macOS and Linux.
+The self-test downloads a small file and checks both aria2c routing and curl pass-through. CI on macOS and Linux runs both mock routing tests and real aria2c downloads against a local range server, verifying resumed files by SHA-256.
 
 ## Releases
 
