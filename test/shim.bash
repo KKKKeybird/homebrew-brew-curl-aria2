@@ -9,6 +9,7 @@ mkdir -p "$fixture/opt/curl/bin" "$fixture/bin" "$fixture/config/homebrew"
 cat >"$fixture/opt/curl/bin/curl" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$@" >"$TEST_CURL_ARGS"
+[ "${TEST_CURL_FAIL:-0}" = 0 ] || exit 22
 while [ $# -gt 0 ]; do
   case "$1" in
     --output|-o) printf 'curl result' >"$2"; break ;;
@@ -31,6 +32,7 @@ if [ "${TEST_ARIA2_FAIL:-0}" = 1 ]; then
   printf 'state' >"$dir/$out.aria2"
   exit 1
 fi
+rm -f "$dir/$out.aria2"
 printf 'aria2 result' >"$dir/$out"
 EOF
 chmod +x "$fixture/opt/curl/bin/curl" "$fixture/bin/aria2c"
@@ -44,7 +46,7 @@ shim="$repo/libexec/curl-aria2"
 ctl="$repo/bin/brew-curl-aria2"
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
-reset() { rm -f "$TEST_CURL_ARGS" "$TEST_ARIA2_ARGS" "$fixture/out" "$fixture/out.aria2"; }
+reset() { rm -rf "$fixture/out.aria2-work"; rm -f "$TEST_CURL_ARGS" "$TEST_ARIA2_ARGS" "$fixture/out" "$fixture/out.aria2"; }
 assert_aria2() { [ -f "$TEST_ARIA2_ARGS" ] && [ ! -f "$TEST_CURL_ARGS" ] || fail "$1"; }
 assert_curl() { [ -f "$TEST_CURL_ARGS" ] && [ ! -f "$TEST_ARIA2_ARGS" ] || fail "$1"; }
 
@@ -54,7 +56,7 @@ assert_aria2 'ordinary Homebrew download should use aria2c'
 [ "$(cat "$fixture/out")" = 'aria2 result' ] || fail 'aria2c output missing'
 grep -q '^--load-cookies=/dev/null$' "$TEST_ARIA2_ARGS" || fail 'empty cookie jar not forwarded'
 
-for option in '--proxy http://proxy.test' '--cookie session=secret' '--proto-redir =https' '--ipv4' '--compressed' '--max-time 20' '--continue-at -'; do
+for option in '--proxy http://proxy.test' '--cookie session=secret' '--proto-redir =https' '--ipv4' '--compressed' '--max-time 20' '--continue-at 12'; do
   reset
   # Deliberately split each fixed fixture argument into words.
   read -r -a extra <<<"$option"
@@ -70,6 +72,41 @@ reset
 printf 'existing' >"$fixture/out"
 "$shim" --output "$fixture/out" --location https://example.test/file
 assert_curl 'existing destination should use curl'
+
+reset
+printf 'existing' >"$fixture/out"
+"$shim" --output "$fixture/out" --location --continue-at - https://example.test/file
+assert_aria2 'automatic curl resume should use aria2c'
+[ "$(cat "$fixture/out")" = 'aria2 result' ] || fail 'resumed file not published'
+[ ! -e "$fixture/out.aria2-work" ] || fail 'successful resume left workdir'
+
+reset
+printf 'existing' >"$fixture/out"
+TEST_ARIA2_FAIL=1 TEST_CURL_FAIL=1 "$shim" --output "$fixture/out" --location -C - https://example.test/file && fail 'failed download returned success'
+[ "$(cat "$fixture/out")" = 'existing' ] || fail 'aria2 modified original curl partial'
+[ -f "$fixture/out.aria2-work/data.aria2" ] || fail 'failed download lost aria2 pieces'
+rm -f "$TEST_ARIA2_ARGS" "$TEST_CURL_ARGS"
+"$shim" --output "$fixture/out" --location -C - https://example.test/file
+assert_aria2 'saved pieces should use aria2c on retry'
+[ "$(cat "$fixture/out")" = 'aria2 result' ] || fail 'saved pieces not published'
+
+reset
+TEST_ARIA2_FAIL=1 TEST_CURL_FAIL=1 "$shim" --output "$fixture/out" --location https://example.test/file && fail 'failed fresh download returned success'
+[ ! -e "$fixture/out" ] || fail 'sparse file exposed to Homebrew'
+rm -f "$TEST_ARIA2_ARGS" "$TEST_CURL_ARGS"
+"$shim" --output "$fixture/out" --location https://example.test/file
+assert_aria2 'fresh retry should resume saved pieces'
+
+reset
+printf 'legacy pieces' >"$fixture/out"
+printf 'state' >"$fixture/out.aria2"
+TEST_ARIA2_FAIL=1 "$shim" --output "$fixture/out" --location -C - https://example.test/file && fail 'failed legacy resume returned success'
+[ ! -e "$TEST_CURL_ARGS" ] || fail 'curl tried to resume legacy pieces'
+[ "$(cat "$fixture/out")" = 'legacy pieces' ] || fail 'legacy pieces changed before publication'
+"$shim" --output "$fixture/out" --location -C - --ipv4 https://example.test/file && fail 'unsupported legacy resume returned success'
+[ ! -e "$TEST_CURL_ARGS" ] || fail 'unsupported request sent legacy pieces to curl'
+"$shim" --output "$fixture/out" --location -C - https://example.test/file
+[ ! -e "$fixture/out.aria2" ] || fail 'successful legacy resume left stale state'
 
 reset
 TEST_ARIA2_FAIL=1 "$shim" --output "$fixture/out" --location https://example.test/file
