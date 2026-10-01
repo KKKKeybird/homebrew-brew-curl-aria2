@@ -3,6 +3,7 @@
 import hashlib
 import http.server
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -74,7 +75,7 @@ try:
         stage = Path(str(output) + '.aria2-work')
 
         def run(resume=True, **variables):
-            args = [str(ROOT / 'libexec/curl-aria2'), '--location', '--output', str(output)]
+            args = [str(ROOT / 'libexec/curl-aria2'), '--progress-bar', '--location', '--output', str(output)]
             if resume:
                 args += ['--continue-at', '-']
             result = subprocess.run(args + [url], env=env | variables, capture_output=True, text=True, timeout=30)
@@ -89,7 +90,9 @@ try:
 
         prefix_bytes = DATA[:1024 * 1024]
         output.write_bytes(prefix_bytes)
-        complete(run())
+        first = run()
+        assert re.search(r'\[#[0-9a-f]+ .+\([0-9]+%\).*CN:.*DL:', first.stdout), first.stdout + first.stderr
+        complete(first)
         assert any(offset >= len(prefix_bytes) for offset in RANGES), 'resume did not issue ranged requests'
 
         output.write_bytes(prefix_bytes)
