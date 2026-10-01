@@ -3,6 +3,7 @@
 import hashlib
 import http.server
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,9 +41,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Range', f'bytes {start}-{end}/{len(DATA)}')
         self.end_headers()
         try:
-            for offset in range(start, end + 1, 16384):
-                self.wfile.write(DATA[offset:min(offset + 16384, end + 1)])
-                time.sleep(0.015)
+            # One pause after a real piece makes both readouts and interrupted
+            # progress deterministic without hundreds of short timer sleeps.
+            first_end = min(start + 1024 * 1024, end + 1)
+            self.wfile.write(DATA[start:first_end])
+            time.sleep(1.4)
+            self.wfile.write(DATA[first_end:end + 1])
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -74,10 +78,10 @@ try:
         stage = Path(str(output) + '.aria2-work')
 
         def run(resume=True, **variables):
-            args = [str(ROOT / 'libexec/curl-aria2'), '--location', '--output', str(output)]
+            args = [str(ROOT / 'libexec/curl-aria2'), '--progress-bar', '--location', '--output', str(output)]
             if resume:
                 args += ['--continue-at', '-']
-            result = subprocess.run(args + [url], env=env | variables, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(args + [url], env=env | variables, capture_output=True, text=True, timeout=60)
             assert 'backend=aria2c ' in result.stderr, result.stderr
             return result
 
@@ -89,7 +93,9 @@ try:
 
         prefix_bytes = DATA[:1024 * 1024]
         output.write_bytes(prefix_bytes)
-        complete(run())
+        first = run()
+        assert re.search(r'\[#[0-9a-f]+ .+\([0-9]+%\).*CN:.*DL:', first.stdout), first.stdout + first.stderr
+        complete(first)
         assert any(offset >= len(prefix_bytes) for offset in RANGES), 'resume did not issue ranged requests'
 
         output.write_bytes(prefix_bytes)

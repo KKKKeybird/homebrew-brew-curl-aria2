@@ -54,7 +54,27 @@ reset
 "$shim" --disable --cookie /dev/null --output "$fixture/out" --location https://example.test/file
 assert_aria2 'ordinary Homebrew download should use aria2c'
 [ "$(cat "$fixture/out")" = 'aria2 result' ] || fail 'aria2c output missing'
+grep -q '^--show-console-readout=true$' "$TEST_ARIA2_ARGS" || fail 'default download hides progress'
 grep -q '^--load-cookies=/dev/null$' "$TEST_ARIA2_ARGS" || fail 'empty cookie jar not forwarded'
+
+# Homebrew pipes child output even when its own terminal shows progress.
+# These invocations run without a PTY, reproducing the missing meter.
+reset
+"$shim" --progress-bar --output "$fixture/out" --location https://example.test/file
+assert_aria2 'piped download should use aria2c'
+grep -q '^--show-console-readout=true$' "$TEST_ARIA2_ARGS" || fail 'piped download hides progress'
+for option in '--silent' '--no-progress-meter' '--silent --progress-bar'; do
+  reset
+  read -r -a extra <<<"$option"
+  "$shim" --output "$fixture/out" --location "${extra[@]}" https://example.test/file
+  grep -q '^--show-console-readout=false$' "$TEST_ARIA2_ARGS" || fail 'quiet download shows progress'
+done
+reset
+HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1 "$shim" --silent --output "$fixture/out" --location https://example.test/file
+grep -q '^--show-console-readout=true$' "$TEST_ARIA2_ARGS" || fail 'forced progress not enabled'
+reset
+HOMEBREW_BREW_CURL_ARIA2_PROGRESS=0 "$shim" --progress-bar --output "$fixture/out" --location https://example.test/file
+grep -q '^--show-console-readout=false$' "$TEST_ARIA2_ARGS" || fail 'progress override not disabled'
 
 for option in '--proxy http://proxy.test' '--cookie session=secret' '--proto-redir =https' '--ipv4' '--compressed' '--max-time 20' '--continue-at 12'; do
   reset

@@ -82,7 +82,7 @@ referer=""
 retry=""
 connect_timeout=""
 location=0
-progress=0
+progress=1
 remote_time=0
 ca_cert=""
 create_dirs=0
@@ -144,7 +144,8 @@ while [ $# -gt 0 ]; do
     --dump-header|-D)
       dump_header=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --progress-bar)
-      progress=1; shift ;;
+      # This changes curl's meter style but does not undo --silent.
+      shift ;;
     --remote-time|-R)
       remote_time=1; shift ;;
     --create-dirs)
@@ -155,7 +156,9 @@ while [ $# -gt 0 ]; do
       to_curl "unsupported-option:$1" ;;
     --location|-L)
       location=1; shift ;;
-    --silent|-s|--show-error|-S|--disable|-q|--globoff|-g|--http1.1|--fail|-f|--no-progress-meter)
+    --silent|-s|--no-progress-meter)
+      progress=0; shift ;;
+    --show-error|-S|--disable|-q|--globoff|-g|--http1.1|--fail|-f)
       shift ;;
     --)
       shift ;;
@@ -287,11 +290,16 @@ fi
 show_readout=0
 if [ "$PROGRESS" = "1" ]; then
   show_readout=1
-elif [ "$PROGRESS" != "0" ] && [ "$progress" = 1 ] && [ -t 1 ]; then
+elif [ "$PROGRESS" != "0" ] && [ "$progress" = 1 ]; then
+  # Homebrew captures both streams through pipes even in an interactive
+  # terminal. Honor curl's requested progress instead of testing our stdout.
   show_readout=1
 fi
 if [ "$show_readout" = 1 ]; then
   args+=(--show-console-readout=true --truncate-console-readout=true)
+  # Readouts must remain visible through Homebrew's capture pipes. Plain
+  # text also avoids color escapes when the wrapper itself has no terminal.
+  [ -t 1 ] || args+=(--enable-color=false)
 else
   args+=(--show-console-readout=false)
 fi
