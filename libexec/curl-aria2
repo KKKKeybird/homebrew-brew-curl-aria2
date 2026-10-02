@@ -83,6 +83,7 @@ retry=""
 connect_timeout=""
 location=0
 progress=1
+progress_bar=0
 remote_time=0
 ca_cert=""
 create_dirs=0
@@ -145,7 +146,7 @@ while [ $# -gt 0 ]; do
       dump_header=1; shift; if [ $# -gt 0 ]; then shift; fi ;;
     --progress-bar)
       # This changes curl's meter style but does not undo --silent.
-      shift ;;
+      progress_bar=1; shift ;;
     --remote-time|-R)
       remote_time=1; shift ;;
     --create-dirs)
@@ -284,7 +285,7 @@ args=(
   --summary-interval=0
   # keep aria2c's end-of-run result table out of Homebrew's stdout
   --download-result=hide
-  --load-cookies=/dev/null
+  --load-cookies=
   # use the system resolver (what curl uses) instead of aria2c's own c-ares;
   # on networks with split DNS / a transparent proxy, c-ares can fail to
   # resolve hosts that every other tool resolves fine (aria2c exit code 19)
@@ -325,11 +326,53 @@ errfile=""
 if [ -n "$LOG" ] || [ -n "$DEBUG" ]; then
   errfile="$(mktemp 2>/dev/null || true)"
 fi
-run_aria2() {
-  if [ -n "$errfile" ]; then
+invoke_aria2() {
+  if [ "$show_readout" = 1 ]; then
+    # aria2 buffers carriage-return readouts on piped stdout. stderr is
+    # unbuffered; merge it into our newline relay before Homebrew captures it.
+    if [ -n "$errfile" ]; then
+      "$aria2c" "${args[@]}" --stderr=true -- "$url" 2>&1 | tee "$errfile"
+      return "${PIPESTATUS[0]}"
+    else
+      "$aria2c" "${args[@]}" --stderr=true -- "$url" 2>&1
+    fi
+  elif [ -n "$errfile" ]; then
     "$aria2c" "${args[@]}" -- "$url" 2>"$errfile"
   else
     "$aria2c" "${args[@]}" -- "$url"
+  fi
+}
+# Homebrew's ReadlineNonblock only forwards newline-terminated records.
+# aria2's carriage-return-only readout would otherwise arrive at EOF. Emit a
+# newline for each update, and redraw the previous row when a bar was requested.
+stream_progress() {
+  local character="" record="" previous_status=0 status=0
+  # Read directly with Bash: stdio-based text filters may themselves buffer
+  # short carriage-return records until the upstream process closes its pipe.
+  while IFS= read -r -n 1 character; do
+    case "$character" in
+      ''|$'\r')
+        [ -n "$record" ] || continue
+        case "$record" in '[#'*) status=1 ;; *) status=0 ;; esac
+        if [ "$status" = 1 ] && [ "$progress_bar" = 1 ] && [ "$previous_status" = 1 ]; then
+          printf '\033[1A\033[2K\r%s\n' "$record"
+        else
+          printf '%s\n' "$record"
+        fi
+        previous_status="$status"
+        record="" ;;
+      *) record="$record$character" ;;
+    esac
+  done
+  [ -z "$record" ] || printf '%s\n' "$record"
+  return 0
+}
+run_aria2() {
+  if [ "$show_readout" = 1 ]; then
+    invoke_aria2 | stream_progress
+    return "${PIPESTATUS[0]}"
+  else
+    invoke_aria2
   fi
 }
 run_aria2

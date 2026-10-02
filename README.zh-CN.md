@@ -43,7 +43,7 @@ HOMEBREW_BREW_CURL_ARIA2_SPLITS=8
 HOMEBREW_BREW_CURL_ARIA2_CHUNK=1M
 ```
 
-排障时可设 `HOMEBREW_BREW_CURL_ARIA2_DEBUG=1`，把分流决策写入 stderr；或设置 `HOMEBREW_BREW_CURL_ARIA2_LOG=/path/to/log`，追加到日志文件。`HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` 会强制启用 aria2c 进度输出，设为 `0` 可关闭。默认显示下载大小、百分比、连接数、速度和剩余时间，即使 Homebrew 通过管道读取输出也会显示；`--silent` 和 `--no-progress-meter` 会隐藏进度。直接调用包装脚本时，也接受不带 `HOMEBREW_` 前缀的变量名。
+排障时可设 `HOMEBREW_BREW_CURL_ARIA2_DEBUG=1`，把分流决策写入 stderr；或设置 `HOMEBREW_BREW_CURL_ARIA2_LOG=/path/to/log`，追加到日志文件。`HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` 会强制启用 aria2c 进度输出，设为 `0` 可关闭。回车刷新的状态会转为以换行结尾的记录，确保 Homebrew 在下载过程中实时显示；进度条请求会刷新同一行。默认显示下载大小、百分比、连接数、速度和剩余时间，即使 Homebrew 通过管道读取输出也会显示；`--silent` 和 `--no-progress-meter` 会隐藏进度。直接调用包装脚本时，也接受不带 `HOMEBREW_` 前缀的变量名。
 
 如果已有其他 `HOMEBREW_CURL_PATH`，`enable` 不会覆盖；`disable` 只删除本项目写入的值。如果设置了 `HOMEBREW_FORCE_BREWED_CURL`，Homebrew 会优先使用 brewed curl。
 

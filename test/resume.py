@@ -4,6 +4,8 @@ import hashlib
 import http.server
 import os
 import re
+import select
+import signal
 from pathlib import Path
 import shutil
 import subprocess
@@ -45,7 +47,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # progress deterministic without hundreds of short timer sleeps.
             first_end = min(start + 1024 * 1024, end + 1)
             self.wfile.write(DATA[start:first_end])
-            time.sleep(1.4)
+            time.sleep(2.8)
             self.wfile.write(DATA[first_end:end + 1])
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -77,11 +79,41 @@ try:
         output = fixture / (hashlib.sha256(url.encode()).hexdigest() + '--download.incomplete')
         stage = output.parent / '.brew-curl-aria2' / output.name
 
-        def run(resume=True, **variables):
+        def run(resume=True, live=False, **variables):
             args = [str(ROOT / 'libexec/curl-aria2'), '--progress-bar', '--location', '--output', str(output)]
             if resume:
                 args += ['--continue-at', '-']
-            result = subprocess.run(args + [url], env=env | variables, capture_output=True, text=True, timeout=60)
+            if live:
+                # A final transcript containing percentages is insufficient:
+                # Homebrew used to hold CR-only output until EOF. Require a
+                # newline update while aria2 still has incomplete pieces.
+                with tempfile.TemporaryFile() as errors:
+                    process = subprocess.Popen(args + [url], env=env | variables,
+                                               stdout=subprocess.PIPE, stderr=errors,
+                                               start_new_session=True)
+                    assert process.stdout is not None
+                    captured = bytearray()
+                    streamed = False
+                    deadline = time.monotonic() + 60
+                    while True:
+                        if time.monotonic() > deadline:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                            raise AssertionError('live progress test timed out')
+                        if select.select([process.stdout], [], [], 0.2)[0]:
+                            block = os.read(process.stdout.fileno(), 65536)
+                            if not block:
+                                break
+                            captured.extend(block)
+                            if b'CN:' in block and b'\n' in block and (stage / 'data.aria2').exists():
+                                streamed = True
+                    code = process.wait(timeout=60)
+                    errors.seek(0)
+                    result = subprocess.CompletedProcess(args + [url], code,
+                                                         captured.decode(), errors.read().decode())
+                    assert streamed, 'progress arrived only after completion: ' + result.stdout + result.stderr
+            else:
+                result = subprocess.run(args + [url], env=env | variables, capture_output=True, text=True, timeout=60)
             assert 'backend=aria2c ' in result.stderr, result.stderr
             return result
 
@@ -93,8 +125,9 @@ try:
 
         prefix_bytes = DATA[:1024 * 1024]
         output.write_bytes(prefix_bytes)
-        first = run()
+        first = run(live=True)
         assert re.search(r'\[#[0-9a-f]+ .+\([0-9]+%\).*CN:.*DL:', first.stdout), first.stdout + first.stderr
+        assert 'Failed to load cookies' not in first.stdout + first.stderr
         complete(first)
         assert any(offset >= len(prefix_bytes) for offset in RANGES), 'resume did not issue ranged requests'
 
