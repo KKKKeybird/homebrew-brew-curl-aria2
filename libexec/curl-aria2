@@ -221,7 +221,23 @@ fi
 # Keep aria2's sparse file away from Homebrew's destination. Homebrew may
 # treat a partial file whose apparent size equals Content-Length as complete.
 # The destination remains a contiguous curl partial until publication.
-workdir="$out.aria2-work"
+# Homebrew matches downloads/<url hash>--* and can mistake any sibling
+# directory for a completed cache file. Keep all state below a private root.
+workroot="$outdir/.brew-curl-aria2"
+[ ! -L "$workroot" ] || to_curl "unsupported-workroot"
+if [ ! -e "$workroot" ]; then
+  (umask 077; mkdir -p -- "$workroot") || to_curl "workroot-create-failed"
+fi
+[ -d "$workroot" ] || to_curl "unsupported-workroot"
+workdir="$workroot/$(basename "$out")"
+# Preserve known legacy pieces when the destination has not yet been confused
+# by Homebrew's cache lookup. Other legacy directories require relocation.
+legacy="$out.aria2-work"
+if [ ! -e "$workdir" ] && [ ! -L "$legacy" ] && [ -d "$legacy" ] && [ -f "$legacy/url" ] && [ ! -L "$legacy/url" ]; then
+  if [ "$(cat "$legacy/url")" = "$url" ]; then
+    mv -- "$legacy" "$workdir" || to_curl "legacy-move-failed"
+  fi
+fi
 if [ -e "$workdir" ] || [ -L "$workdir" ]; then
   [ -d "$workdir" ] && [ ! -L "$workdir" ] || to_curl "unsupported-workdir"
   [ -f "$workdir/url" ] && [ ! -L "$workdir/url" ] || to_curl "unrecognized-workdir"

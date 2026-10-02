@@ -24,11 +24,16 @@ Continue to use normal Homebrew commands, such as `brew upgrade --cask <name>`. 
 
 The wrapper attempts aria2c for a new or resumed HTTP(S) file download with curl options it can translate. It defaults to eight connections and eight splits. Requests for headers, version information, request bodies, overwriting existing files without a resume request, and curl options with different semantics are forwarded unchanged to curl. Examples include explicit proxy or cookie settings, protocol and IP-family restrictions, and explicit numeric resume offsets. Homebrew’s automatic `--continue-at -` requests use aria2c.
 
-aria2c downloads into a private `<output>.aria2-work` directory and publishes the file only after completion. It can resume a sequential curl partial or its own saved pieces. If aria2c fails, the wrapper retries the original command with curl against the untouched destination. If both fail, the saved aria2 pieces remain for the next attempt; they are removed after a successful download. If the server rejects range requests, aria2c retries from the beginning with one connection before falling back to curl. Legacy `.aria2` files are resumed with aria2c and are never handed to curl for continuation. Homebrew's own checksum verification still applies to downloaded formula and cask files.
+aria2c downloads into a private `<output directory>/.brew-curl-aria2/<output filename>` directory and publishes the file only after completion. It can resume a sequential curl partial or its own saved pieces. If aria2c fails, the wrapper retries the original command with curl against the untouched destination. If both fail, the saved aria2 pieces remain for the next attempt; they are removed after a successful download. If the server rejects range requests, aria2c retries from the beginning with one connection before falling back to curl. Legacy `.aria2` files are resumed with aria2c and are never handed to curl for continuation. Homebrew's own checksum verification still applies to downloaded formula and cask files.
 
 Connection splitting can help when a server limits throughput per connection. It may provide no benefit when the network link is already saturated, and some servers do not support range requests. aria2c uses HTTP/1.1; curl may negotiate HTTP/2 or HTTP/3.
 
+If upgrading from 0.2.1 or 0.2.2 after an interrupted download, run `brew-curl-aria2 repair-cache` once before retrying Homebrew. It relocates recognized legacy `.incomplete.aria2-work` directories out of Homebrew's completed-file lookup while preserving their pieces. The new layout prevents this directory/file collision.
+
 ## Configuration
+
+Homebrew's parallel download queue hides subprocess output and draws its own meter from the destination file. Staged aria2 downloads do not expose that file until completion. Set `HOMEBREW_DOWNLOAD_CONCURRENCY=1` in Homebrew's environment file to see aria2's live status consistently. This downloads packages sequentially; each file still uses aria2's configured parallel connections.
+
 
 Set these variables in Homebrew's user environment file:
 

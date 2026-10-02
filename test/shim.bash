@@ -46,7 +46,7 @@ shim="$repo/libexec/curl-aria2"
 ctl="$repo/bin/brew-curl-aria2"
 
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
-reset() { rm -rf "$fixture/out.aria2-work"; rm -f "$TEST_CURL_ARGS" "$TEST_ARIA2_ARGS" "$fixture/out" "$fixture/out.aria2"; }
+reset() { rm -rf "$fixture/.brew-curl-aria2/out"; rm -f "$TEST_CURL_ARGS" "$TEST_ARIA2_ARGS" "$fixture/out" "$fixture/out.aria2"; }
 assert_aria2() { [ -f "$TEST_ARIA2_ARGS" ] && [ ! -f "$TEST_CURL_ARGS" ] || fail "$1"; }
 assert_curl() { [ -f "$TEST_CURL_ARGS" ] && [ ! -f "$TEST_ARIA2_ARGS" ] || fail "$1"; }
 
@@ -98,13 +98,13 @@ printf 'existing' >"$fixture/out"
 "$shim" --output "$fixture/out" --location --continue-at - https://example.test/file
 assert_aria2 'automatic curl resume should use aria2c'
 [ "$(cat "$fixture/out")" = 'aria2 result' ] || fail 'resumed file not published'
-[ ! -e "$fixture/out.aria2-work" ] || fail 'successful resume left workdir'
+[ ! -e "$fixture/.brew-curl-aria2/out" ] || fail 'successful resume left workdir'
 
 reset
 printf 'existing' >"$fixture/out"
 TEST_ARIA2_FAIL=1 TEST_CURL_FAIL=1 "$shim" --output "$fixture/out" --location -C - https://example.test/file && fail 'failed download returned success'
 [ "$(cat "$fixture/out")" = 'existing' ] || fail 'aria2 modified original curl partial'
-[ -f "$fixture/out.aria2-work/data.aria2" ] || fail 'failed download lost aria2 pieces'
+[ -f "$fixture/.brew-curl-aria2/out/data.aria2" ] || fail 'failed download lost aria2 pieces'
 rm -f "$TEST_ARIA2_ARGS" "$TEST_CURL_ARGS"
 "$shim" --output "$fixture/out" --location -C - https://example.test/file
 assert_aria2 'saved pieces should use aria2c on retry'
@@ -148,5 +148,26 @@ printf 'OTHER_SETTING=1\n' >"$env_file"
 "$ctl" disable >"$fixture/ctl.out"
 grep -q '^OTHER_SETTING=1$' "$env_file" || fail 'disable removed another setting'
 ! grep -q '^HOMEBREW_CURL_PATH=' "$env_file" || fail 'disable left its curl setting'
+
+# Legacy state must leave Homebrew's hash-prefix cache namespace, with all
+# bytes preserved. A repeated repair must be harmless.
+export TEST_CACHE="$fixture/cache"
+mkdir -p "$TEST_CACHE/downloads"
+cat >"$fixture/bin/brew" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$TEST_CACHE"
+EOF
+chmod +x "$fixture/bin/brew"
+legacy_name="$(printf '%064d' 0)--file.dmg.incomplete.aria2-work"
+legacy="$TEST_CACHE/downloads/$legacy_name"
+mkdir "$legacy"
+printf 'pieces' >"$legacy/data"
+printf 'state' >"$legacy/data.aria2"
+printf 'https://example.test/file' >"$legacy/url"
+"$ctl" repair-cache >"$fixture/repair.out"
+[ ! -e "$legacy" ] || fail 'legacy directory still matches Homebrew cache glob'
+[ "$(cat "$TEST_CACHE/downloads/.brew-curl-aria2/${legacy_name%.aria2-work}/data")" = pieces ] || fail 'repair discarded pieces'
+"$ctl" repair-cache >"$fixture/repair.out"
+grep -q '0' "$fixture/repair.out" || fail 'repeated repair not harmless'
 
 printf 'PASS: routing, fallback cleanup, and config preservation\n'

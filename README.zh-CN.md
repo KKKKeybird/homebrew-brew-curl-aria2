@@ -24,11 +24,16 @@ Formula 会自动安装 aria2 依赖。单独安装不会改变 Homebrew 的下�
 
 带有可转换 curl 参数的 HTTP(S) 文件下载和续传会优先使用 aria2c。默认使用 8 个连接和 8 个分段。获取响应头、查询版本、提交请求体、未指定续传时覆盖已有文件，以及使用语义不同的 curl 参数时，原命令会交给 curl。显式代理或 Cookie、协议及 IP 地址族限制、指定数字偏移的续传请求都属于后一类。Homebrew 的自动续传参数 `--continue-at -` 会交给 aria2c。
 
-aria2c 在独立的 `<输出路径>.aria2-work` 目录中下载，完成后才把文件交给 Homebrew。它可以续传 curl 的连续部分文件，也可以恢复自己的分段进度。aria2c 失败时，脚本会用原始参数运行 curl，保留原来的连续部分文件。如果两者都失败，aria2 的分段进度会保留到下次尝试；下载成功后会清理。服务器拒绝 Range 请求时，会先让 aria2c 用单连接重新下载，失败后才回退 curl。旧版 `.aria2` 分段文件只会交给 aria2c 续传，不会交给 curl。Homebrew 对 formula 和 cask 下载文件的校验仍然生效。
+aria2c 在独立的 `<输出目录>/.brew-curl-aria2/<输出文件名>` 目录中下载，完成后才把文件交给 Homebrew。它可以续传 curl 的连续部分文件，也可以恢复自己的分段进度。aria2c 失败时，脚本会用原始参数运行 curl，保留原来的连续部分文件。如果两者都失败，aria2 的分段进度会保留到下次尝试；下载成功后会清理。服务器拒绝 Range 请求时，会先让 aria2c 用单连接重新下载，失败后才回退 curl。旧版 `.aria2` 分段文件只会交给 aria2c 续传，不会交给 curl。Homebrew 对 formula 和 cask 下载文件的校验仍然生效。
 
 如果服务器对单连接限速，多连接可能提升速度；链路已满载时可能没有收益。部分服务器不支持 Range 请求。aria2c 使用 HTTP/1.1，而 curl 可能协商 HTTP/2 或 HTTP/3。
 
+从 0.2.1 或 0.2.2 升级且曾中断下载时，重试 Homebrew 前运行一次 `brew-curl-aria2 repair-cache`。它会把已识别的旧 `.incomplete.aria2-work` 目录移出 Homebrew 的缓存匹配范围，保留分段数据。新版目录结构不会再产生这种文件与目录冲突。
+
 ## 配置
+
+Homebrew 并行下载时会隐藏子进程输出，并根据目标文件大小绘制自己的进度。aria2 的暂存文件只在完成后才交给 Homebrew。可在 Homebrew 环境文件中设置 `HOMEBREW_DOWNLOAD_CONCURRENCY=1`，稳定显示 aria2 的实时状态。此时逐个下载软件包，每个文件仍使用 aria2 配置的多个连接。
+
 
 以下变量可写入 Homebrew 用户环境文件：
 

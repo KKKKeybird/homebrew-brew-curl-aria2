@@ -74,8 +74,8 @@ try:
             env.pop(key, None)
         env['no_proxy'] = '127.0.0.1'
         url = f'http://127.0.0.1:{server.server_port}/file'
-        output = fixture / 'download.incomplete'
-        stage = Path(str(output) + '.aria2-work')
+        output = fixture / (hashlib.sha256(url.encode()).hexdigest() + '--download.incomplete')
+        stage = output.parent / '.brew-curl-aria2' / output.name
 
         def run(resume=True, **variables):
             args = [str(ROOT / 'libexec/curl-aria2'), '--progress-bar', '--location', '--output', str(output)]
@@ -114,7 +114,16 @@ try:
         assert failed.returncode != 0, failed.stderr
         assert output.read_bytes() == prefix_bytes, 'original partial changed on failure'
         assert (stage / 'data.aria2').is_file(), 'interrupted download lost control file'
+        # Reproduce Homebrew's cache matching: only .incomplete paths are
+        # excluded. No aria2 directory may be selected as a completed download.
+        matches = [p for p in fixture.glob(hashlib.sha256(url.encode()).hexdigest() + '--*')
+                   if not p.suffix.endswith('.incomplete')]
+        assert matches == [], f'Homebrew could select aria2 state as cached file: {matches}'
+        # Move state back to the old layout to verify safe migration.
+        legacy = Path(str(output) + '.aria2-work')
+        shutil.move(str(stage), legacy)
         complete(run())
+        assert not legacy.exists(), 'legacy state was not relocated'
 
         # Fresh interrupted downloads must not expose a full-size sparse file
         # at the path Homebrew checks before deciding whether to continue.
