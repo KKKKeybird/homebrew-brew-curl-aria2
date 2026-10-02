@@ -184,6 +184,30 @@ cmd_test() {
   printf '\n全部通过。\n'
 }
 
+cmd_repair_cache() {
+  local cache downloads root old name target moved=0
+  cache="$("$PREFIX/bin/brew" --cache)" || die "无法确定 Homebrew 缓存目录"
+  downloads="$cache/downloads"
+  [ -d "$downloads" ] || { printf '没有需要迁移的旧下载状态。\n'; return 0; }
+  root="$downloads/.brew-curl-aria2"
+  [ ! -L "$root" ] || die "下载状态目录不能是符号链接"
+  for old in "$downloads"/*.incomplete.aria2-work; do
+    [ -d "$old" ] && [ ! -L "$old" ] || continue
+    [ -f "$old/url" ] && [ ! -L "$old/url" ] && [ -f "$old/data" ] && [ ! -L "$old/data" ] || continue
+    name="$(basename "$old")"
+    [[ "$name" =~ ^[0-9a-f]{64}--.+[.]incomplete[.]aria2-work$ ]] || continue
+    (umask 077; mkdir -p -- "$root") || die "无法创建下载状态目录"
+    target="$root/${name%.aria2-work}"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      # Keep both generations; never overwrite the newer private state.
+      target="$(mktemp -d "$root/legacy.XXXXXX")/pieces" || die "无法保留旧下载状态"
+    fi
+    mv -- "$old" "$target" || die "无法迁移旧下载状态"
+    moved=$((moved + 1))
+  done
+  printf '已迁移 %s 个旧下载状态目录，分段数据已保留。\n' "$moved"
+}
+
 cmd_version() { printf '%s\n' "$VERSION"; }
 
 usage() {
@@ -195,6 +219,7 @@ brew-curl-aria2 $VERSION - 让 Homebrew 用 aria2c 多线程下载
   brew-curl-aria2 disable       移除该配置，恢复 curl
   brew-curl-aria2 status        查看当前状态与告警
   brew-curl-aria2 test [URL]    端到端自检（默认用 brew 镜像上的小文件）
+  brew-curl-aria2 repair-cache  迁移旧版下载状态，修复缓存目录冲突
   brew-curl-aria2 version
 
 环境变量:
@@ -209,6 +234,7 @@ case "${1:-}" in
   enable) shift; cmd_enable "$@" ;;
   disable) shift; cmd_disable "$@" ;;
   status) shift; cmd_status "$@" ;;
+  repair-cache) shift; cmd_repair_cache "$@" ;;
   test) shift; cmd_test "$@" ;;
   version|--version|-v) cmd_version ;;
   ""|-h|--help|help) usage ;;
