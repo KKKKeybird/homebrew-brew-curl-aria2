@@ -1,8 +1,8 @@
 class BrewCurlAria2 < Formula
   desc "Route Homebrew downloads through aria2c for multi-connection downloads"
   homepage "https://github.com/KKKKeybird/homebrew-brew-curl-aria2"
-  url "https://github.com/KKKKeybird/homebrew-brew-curl-aria2/releases/download/v0.2.2/brew-curl-aria2-0.2.2.tar.gz"
-  sha256 "d74bea88f71bbe4aadfd0d8833dd4cddba95b74bf7fcf5477566b9e5923b4ce3"
+  url "https://github.com/KKKKeybird/homebrew-brew-curl-aria2/releases/download/v0.2.3/brew-curl-aria2-0.2.3.tar.gz"
+  sha256 "55a903093e6960e1cb7a168e847a6334b371ff6d5aefcef8c5ecad667910bc70"
   license "MIT"
   head "https://github.com/KKKKeybird/homebrew-brew-curl-aria2.git", branch: "main"
 
