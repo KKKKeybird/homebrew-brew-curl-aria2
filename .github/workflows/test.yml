@@ -22,5 +22,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y aria2
       - name: Test actual aria2 resume and file integrity
         run: python3 test/resume.py
+      - name: Test contiguous progress safety
+        run: ruby test/contiguous_progress.rb
+      - name: Test native Homebrew parallel progress (macOS)
+        if: runner.os == 'macOS'
+        run: python3 test/parallel_progress.py
       - name: Test release packaging
         run: python3 test/release.py

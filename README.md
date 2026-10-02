@@ -24,7 +24,7 @@ Continue to use normal Homebrew commands, such as `brew upgrade --cask <name>`. 
 
 The wrapper attempts aria2c for a new or resumed HTTP(S) file download with curl options it can translate. It defaults to eight connections and eight splits. Requests for headers, version information, request bodies, overwriting existing files without a resume request, and curl options with different semantics are forwarded unchanged to curl. Examples include explicit proxy or cookie settings, protocol and IP-family restrictions, and explicit numeric resume offsets. Homebrew’s automatic `--continue-at -` requests use aria2c.
 
-aria2c downloads into a private `<output directory>/.brew-curl-aria2/<output filename>` directory and publishes the file only after completion. It can resume a sequential curl partial or its own saved pieces. If aria2c fails, the wrapper retries the original command with curl against the untouched destination. If both fail, the saved aria2 pieces remain for the next attempt; they are removed after a successful download. If the server rejects range requests, aria2c retries from the beginning with one connection before falling back to curl. Legacy `.aria2` files are resumed with aria2c and are never handed to curl for continuation. Homebrew's own checksum verification still applies to downloaded formula and cask files.
+aria2c downloads into a private `<output directory>/.brew-curl-aria2/<output filename>` directory and publishes the completed file only after completion. For Homebrew `.incomplete` destinations, a small bridge mirrors only confirmed, contiguous pieces into the destination during the transfer so Homebrew can read native progress. It can resume a sequential curl partial or its own saved pieces. If aria2c fails, the wrapper retries the original command with curl against the destination containing only a valid sequential partial. If both fail, the saved aria2 pieces remain for the next attempt; they are removed after a successful download. If the server rejects range requests, aria2c retries from the beginning with one connection before falling back to curl. Legacy `.aria2` files are resumed with aria2c and are never handed to curl for continuation. Homebrew's own checksum verification still applies to downloaded formula and cask files.
 
 Connection splitting can help when a server limits throughput per connection. It may provide no benefit when the network link is already saturated, and some servers do not support range requests. aria2c uses HTTP/1.1; curl may negotiate HTTP/2 or HTTP/3.
 
@@ -32,8 +32,9 @@ If upgrading from 0.2.1 or 0.2.2 after an interrupted download, run `brew-curl-a
 
 ## Configuration
 
-Homebrew's parallel download queue hides subprocess output and draws its own meter from the destination file. Staged aria2 downloads do not expose that file until completion. Set `HOMEBREW_DOWNLOAD_CONCURRENCY=1` in Homebrew's environment file to see aria2's live status consistently. This downloads packages sequentially; each file still uses aria2's configured parallel connections.
+Homebrew's parallel queue draws its meter from the `.incomplete` download file. The wrapper integrates a bridge directly at `HOMEBREW_CURL_PATH`: it reads aria2's saved piece map and appends only the actual completed prefix to that file. Sparse pieces remain private, and the full file is published only after aria2 succeeds. Normal `brew upgrade`, `install`, and `fetch` therefore keep concurrent package downloads and show Homebrew's native byte counts and progress bars. No shell function, startup-file edit, daemon, or Homebrew source patch is required.
 
+Native progress represents the completed contiguous prefix and can lag behind pieces downloaded elsewhere in the file. The bridge disables aria2's disk cache and prefers pieces in order while retaining multiple connections; mirroring adds disk writes and temporary disk use. It uses Homebrew's already selected Ruby runtime, validates aria2's v1 HTTP control-file format, and skips progress mirroring if the runtime or supported state is unavailable. Downloading and final verification continue normally. Homebrew's native meter does not display aria2's connection count, speed, or ETA; the detailed aria2 readout is still available for serial downloads. You can disable mirroring with `HOMEBREW_BREW_CURL_ARIA2_NATIVE_PROGRESS=0`.
 
 Set these variables in Homebrew's user environment file:
 
@@ -54,6 +55,8 @@ brew-curl-aria2 status
 brew-curl-aria2 test
 bash test/shim.bash
 python3 test/resume.py
+ruby test/contiguous_progress.rb
+python3 test/parallel_progress.py
 ```
 
 The self-test downloads a small file and checks both aria2c routing and curl pass-through. CI on macOS and Linux runs both mock routing tests and real aria2c downloads against a local range server, verifying resumed files by SHA-256.

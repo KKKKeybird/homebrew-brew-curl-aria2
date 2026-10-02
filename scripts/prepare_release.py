@@ -16,6 +16,7 @@ PACKAGE_FILES = (
     "README.zh-CN.md",
     "bin/brew-curl-aria2",
     "libexec/curl-aria2",
+    "libexec/contiguous-progress.rb",
 )
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 

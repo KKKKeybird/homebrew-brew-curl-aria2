@@ -15,6 +15,7 @@ files = (
     "Formula/brew-curl-aria2.rb",
     "bin/brew-curl-aria2",
     "libexec/curl-aria2",
+    "libexec/contiguous-progress.rb",
     "LICENSE",
     "README.md",
     "README.zh-CN.md",

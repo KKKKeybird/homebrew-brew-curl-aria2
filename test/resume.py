@@ -71,7 +71,8 @@ try:
         env = os.environ.copy()
         env.update(HOMEBREW_PREFIX=str(prefix),
                    HOMEBREW_BREW_CURL_ARIA2_DEBUG='1',
-                   HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS='4')
+                   HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS='4',
+                   HOMEBREW_DOWNLOAD_CONCURRENCY='1')
         for key in ('http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'):
             env.pop(key, None)
         env['no_proxy'] = '127.0.0.1'

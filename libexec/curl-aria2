@@ -321,6 +321,24 @@ else
   args+=(--show-console-readout=false)
 fi
 
+# Homebrew's parallel renderer polls its .incomplete file, rather than child
+# output. Mirror real, completed pieces through a small Ruby supervisor. Keep
+# sparse pieces private and preserve curl's normal resume/exit-code contract.
+aria2_runner=("$aria2c")
+progress_helper="$(dirname "$self")/contiguous-progress.rb"
+progress_ruby="${HOMEBREW_RUBY_PATH:-}"
+if [ -z "$progress_ruby" ] || [ ! -x "$progress_ruby" ]; then
+  progress_ruby="$(command -v ruby 2>/dev/null || true)"
+fi
+if [[ "$(basename "$out")" =~ ^[0-9a-f]{64}--.+[.]incomplete$ ]] &&
+   { [ "$progress" = 0 ] || [ "${HOMEBREW_DOWNLOAD_CONCURRENCY:-auto}" != 1 ]; } &&
+   [ -f "$progress_helper" ] && [ -n "$progress_ruby" ] && [ -x "$progress_ruby" ] &&
+   [ ! -e "$out.aria2" ] &&
+   [ "${HOMEBREW_BREW_CURL_ARIA2_NATIVE_PROGRESS:-1}" != 0 ]; then
+  aria2_runner=("$progress_ruby" "$progress_helper" "$workdir" "$out" "$aria2c")
+  args+=(--disk-cache=0 --stream-piece-selector=inorder)
+fi
+
 log "backend=aria2c url=$url out=$out connections=$CONNECTIONS resume=$resume"
 errfile=""
 if [ -n "$LOG" ] || [ -n "$DEBUG" ]; then
@@ -331,15 +349,15 @@ invoke_aria2() {
     # aria2 buffers carriage-return readouts on piped stdout. stderr is
     # unbuffered; merge it into our newline relay before Homebrew captures it.
     if [ -n "$errfile" ]; then
-      "$aria2c" "${args[@]}" --stderr=true -- "$url" 2>&1 | tee "$errfile"
+      "${aria2_runner[@]}" "${args[@]}" --stderr=true -- "$url" 2>&1 | tee "$errfile"
       return "${PIPESTATUS[0]}"
     else
-      "$aria2c" "${args[@]}" --stderr=true -- "$url" 2>&1
+      "${aria2_runner[@]}" "${args[@]}" --stderr=true -- "$url" 2>&1
     fi
   elif [ -n "$errfile" ]; then
-    "$aria2c" "${args[@]}" -- "$url" 2>"$errfile"
+    "${aria2_runner[@]}" "${args[@]}" -- "$url" 2>"$errfile"
   else
-    "$aria2c" "${args[@]}" -- "$url"
+    "${aria2_runner[@]}" "${args[@]}" -- "$url"
   fi
 }
 # Homebrew's ReadlineNonblock only forwards newline-terminated records.
@@ -392,7 +410,8 @@ if [ "$rc" -ne 0 ] || [ ! -s "$workdir/data" ] || [ -e "$workdir/data.aria2" ]; 
     log "aria2c stderr: $(tail -3 "$errfile" | tr '\n' ' ')"
   fi
   [ -n "$errfile" ] && rm -f "$errfile"
-  # The original curl destination is unchanged, so curl can safely resume it.
+  # The curl destination contains only a valid sequential prefix, so curl
+  # can safely resume it (or overwrite it when the original request was fresh).
   # Keep aria2 pieces if curl also fails; the next attempt resumes those pieces.
   log "aria2c exit=$rc -> falling back to curl (staged progress retained)"
   if [ -e "$out.aria2" ]; then
