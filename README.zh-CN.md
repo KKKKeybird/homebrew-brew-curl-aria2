@@ -32,7 +32,6 @@ aria2c 在独立的 `<输出目录>/.brew-curl-aria2/<输出文件名>` 目录�
 
 ## 配置
 
-Homebrew 并行下载时会隐藏子进程输出，并根据目标文件大小绘制自己的进度。aria2 的暂存文件只在完成后才交给 Homebrew。可在 Homebrew 环境文件中设置 `HOMEBREW_DOWNLOAD_CONCURRENCY=1`，稳定显示 aria2 的实时状态。此时逐个下载软件包，每个文件仍使用 aria2 配置的多个连接。
 
 
 以下变量可写入 Homebrew 用户环境文件：
@@ -75,3 +74,13 @@ brew untap kkkkeybird/brew-curl-aria2
 ## 许可证
 
 MIT。本项目与 Homebrew、aria2 官方无关联。
+
+## 原生并发进度
+
+桥接直接集成在 `HOMEBREW_CURL_PATH` 指向的兼容脚本中，无需 shell 函数、启动文件配置、后台服务或 Homebrew 源码修改。正常执行 `brew upgrade`、`install`、`fetch`，软件包保持并发下载，Homebrew 原生界面显示已下载大小和进度条。
+
+桥接读取 aria2 保存的已完成分段位图，只把从文件头开始、已经完成的连续数据追加到 Homebrew 的 `.incomplete` 文件。稀疏分段留在私有暂存目录，完整文件只在 aria2 成功后交付。这样既兼容 Homebrew 的进度读取，也保留 aria2 多连接下载及续传，失败时 curl 可安全续传有效部分。
+
+进度表示已确认的连续前缀，可能落后于文件其他位置的下载。桥接禁用 aria2 磁盘缓存并优先按顺序选择分段，同时保留多连接；同步前缀会增加磁盘写入和临时空间。它使用 Homebrew 已选择的 Ruby，验证 aria2 v1 HTTP 状态格式；缺少运行环境或遇到未知格式时跳过进度同步，下载和最终校验照常进行。可设置 `HOMEBREW_BREW_CURL_ARIA2_NATIVE_PROGRESS=0` 关闭此功能。
+
+Homebrew 原生并发界面不显示 aria2 的连接数、速度和预计剩余时间；串行下载仍可显示 aria2 的详细状态。验证：`ruby test/contiguous_progress.rb` 和 `python3 test/parallel_progress.py`。

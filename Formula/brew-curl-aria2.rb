@@ -10,7 +10,7 @@ class BrewCurlAria2 < Formula
 
   def install
     bin.install "bin/brew-curl-aria2"
-    libexec.install "libexec/curl-aria2"
+    libexec.install "libexec/curl-aria2", "libexec/contiguous-progress.rb"
   end
 
   def caveats
