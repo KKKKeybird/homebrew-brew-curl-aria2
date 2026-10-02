@@ -65,6 +65,7 @@ try:
                    HOMEBREW_DOWNLOAD_CONCURRENCY='2', HOMEBREW_NO_AUTO_UPDATE='1',
                    HOMEBREW_NO_INSTALL_FROM_API='1', TERM='xterm-256color', COLUMNS='80', LINES='30',
                    HOMEBREW_BREW_CURL_ARIA2_CONNECTIONS='4',
+                   HOMEBREW_BREW_CURL_ARIA2_LOG=str(cache/'backend.log'),
                    HOMEBREW_PROGRESS_TEST_SHA=hashlib.sha256(DATA).hexdigest())
         for key in ('http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'):
             env.pop(key, None)
@@ -126,7 +127,7 @@ resources.each { |r| abort "checksum failure" unless Digest::SHA256.file(r.cache
         text = captured.decode(errors='replace')
         assert result == 0, text
         assert overlap, 'packages did not overlap: '+text
-        assert checked_prefixes > 0, 'no confirmed prefix was exposed'
+        assert checked_prefixes > 0, 'no confirmed prefix was exposed: '+text+'\n'+(cache/'backend.log').read_text()
         assert live_meter, 'native progress was not live: '+text
         assert any(offset > 0 for offset in RANGES), 'aria2 did not split range requests'
         assert not list(cache.glob('downloads/.brew-curl-aria2/*/data')), 'staging not cleaned'

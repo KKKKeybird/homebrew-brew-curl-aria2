@@ -331,7 +331,7 @@ if [ -z "$progress_ruby" ] || [ ! -x "$progress_ruby" ]; then
   progress_ruby="$(command -v ruby 2>/dev/null || true)"
 fi
 if [[ "$(basename "$out")" =~ ^[0-9a-f]{64}--.+[.]incomplete$ ]] &&
-   [ "$progress" = 0 ] &&
+   { [ "$progress" = 0 ] || [ "${HOMEBREW_DOWNLOAD_CONCURRENCY:-auto}" != 1 ]; } &&
    [ -f "$progress_helper" ] && [ -n "$progress_ruby" ] && [ -x "$progress_ruby" ] &&
    [ ! -e "$out.aria2" ] &&
    [ "${HOMEBREW_BREW_CURL_ARIA2_NATIVE_PROGRESS:-1}" != 0 ]; then
