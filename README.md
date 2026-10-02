@@ -43,7 +43,7 @@ HOMEBREW_BREW_CURL_ARIA2_SPLITS=8
 HOMEBREW_BREW_CURL_ARIA2_CHUNK=1M
 ```
 
-For troubleshooting, set `HOMEBREW_BREW_CURL_ARIA2_DEBUG=1` to log routing decisions to stderr, or `HOMEBREW_BREW_CURL_ARIA2_LOG=/path/to/log` to append them to a file. `HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` forces aria2c's console readout on; `0` turns it off. By default, download status (size, percentage, connections, speed, and ETA) is shown even through Homebrew's capture pipes, unless curl requests `--silent` or `--no-progress-meter`. Direct invocation of the wrapper also accepts the same names without the `HOMEBREW_` prefix.
+For troubleshooting, set `HOMEBREW_BREW_CURL_ARIA2_DEBUG=1` to log routing decisions to stderr, or `HOMEBREW_BREW_CURL_ARIA2_LOG=/path/to/log` to append them to a file. `HOMEBREW_BREW_CURL_ARIA2_PROGRESS=1` forces aria2c's console readout on; `0` turns it off. Carriage-return readouts are relayed as newline-terminated records so Homebrew displays them during the transfer; progress-bar requests redraw one row. By default, download status (size, percentage, connections, speed, and ETA) is shown even through Homebrew's capture pipes, unless curl requests `--silent` or `--no-progress-meter`. Direct invocation of the wrapper also accepts the same names without the `HOMEBREW_` prefix.
 
 `brew-curl-aria2 enable` refuses to replace an existing, different `HOMEBREW_CURL_PATH`. `disable` removes only this project's setting. If `HOMEBREW_FORCE_BREWED_CURL` is set, Homebrew gives the brewed curl precedence.
 

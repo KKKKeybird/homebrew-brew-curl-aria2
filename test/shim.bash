@@ -55,7 +55,7 @@ reset
 assert_aria2 'ordinary Homebrew download should use aria2c'
 [ "$(cat "$fixture/out")" = 'aria2 result' ] || fail 'aria2c output missing'
 grep -q '^--show-console-readout=true$' "$TEST_ARIA2_ARGS" || fail 'default download hides progress'
-grep -q '^--load-cookies=/dev/null$' "$TEST_ARIA2_ARGS" || fail 'empty cookie jar not forwarded'
+grep -q '^--load-cookies=$' "$TEST_ARIA2_ARGS" || fail 'empty cookie jar not forwarded'
 
 # Homebrew pipes child output even when its own terminal shows progress.
 # These invocations run without a PTY, reproducing the missing meter.
