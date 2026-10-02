@@ -11,7 +11,7 @@
 
 set -u
 
-VERSION="0.2.4"
+VERSION="0.2.5"
 
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 PREFIX="${HOMEBREW_PREFIX:-$(/opt/homebrew/bin/brew --prefix 2>/dev/null || echo /opt/homebrew)}"
