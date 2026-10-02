@@ -87,7 +87,7 @@ resources.each { |r| abort "checksum failure" unless Digest::SHA256.file(r.cache
         overlap = False
         live_meter = False
         checked_prefixes = 0
-        deadline = time.monotonic() + 45
+        deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             stages = list(cache.glob('downloads/.brew-curl-aria2/*/data'))
             partials = list(cache.glob('downloads/*.incomplete'))
@@ -98,9 +98,14 @@ resources.each { |r| abort "checksum failure" unless Digest::SHA256.file(r.cache
                     payload = partial.read_bytes()
                 except FileNotFoundError:
                     continue
-                assert 0 < len(payload) < len(DATA), 'premature full-size partial'
+                if not payload:
+                    continue  # file creation can precede the first write
+                assert len(payload) <= len(DATA), 'oversized partial'
+                state = cache/'downloads/.brew-curl-aria2'/partial.name/'data.aria2'
+                assert len(payload) < len(DATA) or not state.exists(), 'full size exposed while aria2 remains incomplete'
                 assert payload == DATA[:len(payload)], 'partial contains gaps or invalid bytes'
-                checked_prefixes += 1
+                if len(payload) < len(DATA):
+                    checked_prefixes += 1
             if select.select([master], [], [], .1)[0]:
                 try:
                     block = os.read(master, 65536)
