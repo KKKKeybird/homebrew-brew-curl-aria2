@@ -69,6 +69,7 @@ try:
         for key in ('http_proxy', 'https_proxy', 'all_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'):
             env.pop(key, None)
         env['no_proxy'] = '127.0.0.1'
+        hashes = [hashlib.sha256((env['HOMEBREW_PROGRESS_TEST_URL'] + str(i)).encode()).hexdigest() for i in range(2)]
         # Real native queue: no preload, renderer override, or shell integration.
         ruby = '''require "download_queue"; require "resource";
 q=Homebrew::DownloadQueue.new;
@@ -90,7 +91,7 @@ resources.each { |r| abort "checksum failure" unless Digest::SHA256.file(r.cache
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             stages = list(cache.glob('downloads/.brew-curl-aria2/*/data'))
-            partials = list(cache.glob('downloads/*.incomplete'))
+            partials = [path for digest in hashes for path in cache.glob(f'downloads/{digest}--*.incomplete')]
             if len(stages) == 2:
                 overlap = True
             for partial in partials:
