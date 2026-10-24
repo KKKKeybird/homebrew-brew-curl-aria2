@@ -8,6 +8,29 @@ mkdir -p "$fixture/opt/curl/bin" "$fixture/bin" "$fixture/config/homebrew"
 
 cat >"$fixture/opt/curl/bin/curl" <<'EOF'
 #!/bin/bash
+# The capability probe is separate from a curl download fallback.
+if [[ " $* " == *" --head "* ]]; then
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --dump-header ]; then
+      printf 'HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n' >"$2"
+      shift
+    fi
+    shift
+  done
+  printf 200
+  exit 0
+fi
+if [[ " $* " == *" --range 0-0 "* ]]; then
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dump-header) printf 'HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-0/100\r\n\r\n' >"$2"; shift ;;
+      --output) printf x >"$2"; shift ;;
+    esac
+    shift
+  done
+  printf 206
+  exit 0
+fi
 printf '%s\n' "$@" >"$TEST_CURL_ARGS"
 [ "${TEST_CURL_FAIL:-0}" = 0 ] || exit 22
 while [ $# -gt 0 ]; do

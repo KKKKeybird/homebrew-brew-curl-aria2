@@ -179,6 +179,13 @@ done
 [ "$post" = 0 ] || to_curl "request-with-body"
 [ "$head" = 0 ] || to_curl "head-request"
 [ "$dump_header" = 0 ] || to_curl "header-dump"
+if [ "$header_count" -gt 0 ]; then
+  for h in "${headers[@]}"; do
+    case "$(printf '%s' "${h%%:*}" | tr '[:upper:]' '[:lower:]')" in
+      range|if-range|accept-encoding) to_curl "custom-range-or-encoding" ;;
+    esac
+  done
+fi
 case "$url" in
   http://*|https://*) ;;
   *) to_curl "non-http-url" ;;
@@ -277,6 +284,10 @@ args=(
   --out=data
   --continue=true
   --always-resume=true
+  # HEAD avoids the initial whole-file GET. Pipelining makes aria2 request
+  # each piece's actual end, rather than a tail it may later stop consuming.
+  --use-head=true
+  --enable-http-pipelining=true
   --auto-save-interval=1
   --auto-file-renaming=false
   --allow-overwrite=true
@@ -303,6 +314,48 @@ if [ "$header_count" -gt 0 ]; then
   for h in "${headers[@]}"; do
     args+=("--header=$h")
   done
+fi
+
+# Validate an actual range response before allowing parallel GETs. A server
+# advertising Accept-Ranges may still ignore Range; never fan that out eight
+# times. The one-byte cap rejects a known full-file response before its body.
+# curl is used only for this bounded capability check; aria2 owns the file.
+probe_dir="$(mktemp -d 2>/dev/null || true)"
+range_ok=0
+if [ -n "$probe_dir" ]; then
+  probe_args=(--disable --globoff --silent --location --fail --max-time 20
+    --connect-timeout "${connect_timeout:-10}"
+    --dump-header "$probe_dir/headers" --output "$probe_dir/body"
+    --write-out '%{http_code}')
+  [ -n "$ua" ] && probe_args+=(--user-agent "$ua")
+  [ -n "$referer" ] && probe_args+=(--referer "$referer")
+  [ -n "$ca_cert" ] && probe_args+=(--cacert "$ca_cert")
+  if [ "$header_count" -gt 0 ]; then
+    for h in "${headers[@]}"; do probe_args+=(--header "$h"); done
+  fi
+  # aria2 needs HEAD's size before allocating pieces. Without it, its first
+  # GET would again request the complete entity, even with pipelining enabled.
+  probe_code="$("$real_curl" "${probe_args[@]}" --head --output /dev/null -- "$url" 2>/dev/null)"
+  probe_rc=$?
+  probe_size="$(awk '/^HTTP\// {s=""} tolower($1)=="content-length:" {s=$2; sub(/\r$/, "", s)} END {print s}' "$probe_dir/headers" 2>/dev/null)"
+  if [ "$probe_rc" = 0 ] && [ "$probe_code" = 200 ] && [[ "$probe_size" =~ ^[0-9]+$ ]] && [ "$probe_size" != 0 ]; then
+    probe_code="$("$real_curl" "${probe_args[@]}" --range 0-0 --max-filesize 1 -- "$url" 2>/dev/null)"
+    probe_rc=$?
+    probe_range="$(awk '/^HTTP\// {r=""} tolower($1)=="content-range:" {r=$2 " " $3; sub(/\r$/, "", r)} END {print r}' "$probe_dir/headers" 2>/dev/null)"
+    if [ "$probe_rc" = 0 ] && [ "$probe_code" = 206 ] &&
+       [ "$probe_range" = "bytes 0-0/$probe_size" ] &&
+       [ -f "$probe_dir/body" ] && [ "$(wc -c <"$probe_dir/body" | tr -d ' ')" = 1 ]; then
+      range_ok=1
+    fi
+  fi
+  rm -f -- "$probe_dir/headers" "$probe_dir/body"
+  rmdir -- "$probe_dir" 2>/dev/null || true
+fi
+if [ "$range_ok" = 1 ]; then
+  log "range-mode=bounded-pieces"
+else
+  log "range-unverified -> single aria2c stream"
+  args+=(--use-head=false --enable-http-pipelining=false -x 1 -s 1 --max-connection-per-server=1)
 fi
 show_readout=0
 if [ "$PROGRESS" = "1" ]; then
@@ -400,7 +453,7 @@ if [ "$rc" = 8 ]; then
   # Only staged files are discarded; the original partial remains untouched.
   log "range-unsupported -> restarting aria2c with one connection"
   rm -f -- "$workdir/data" "$workdir/data.aria2"
-  args+=(--continue=false -x 1 -s 1 --max-connection-per-server=1)
+  args+=(--continue=false --use-head=false --enable-http-pipelining=false -x 1 -s 1 --max-connection-per-server=1)
   run_aria2
   rc=$?
 fi

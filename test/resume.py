@@ -25,6 +25,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(DATA)))
+        self.end_headers()
+
     def do_GET(self):
         start, end = 0, len(DATA) - 1
         value = self.headers.get('Range')
@@ -43,11 +48,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Range', f'bytes {start}-{end}/{len(DATA)}')
         self.end_headers()
         try:
-            # One pause after a real piece makes both readouts and interrupted
-            # progress deterministic without hundreds of short timer sleeps.
+            # Pause before a real piece so bounded responses remain in flight
+            # long enough to exercise live readouts and interrupted progress.
             first_end = min(start + 1024 * 1024, end + 1)
+            if end > start:
+                time.sleep(2.8)
             self.wfile.write(DATA[start:first_end])
-            time.sleep(2.8)
             self.wfile.write(DATA[first_end:end + 1])
         except (BrokenPipeError, ConnectionResetError):
             pass

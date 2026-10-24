@@ -22,6 +22,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y aria2
       - name: Test actual aria2 resume and file integrity
         run: python3 test/resume.py
+      - name: Verify bounded HTTP requests and response byte totals
+        run: python3 test/bounded_ranges.py
       - name: Test contiguous progress safety
         run: ruby test/contiguous_progress.rb
       - name: Test native Homebrew parallel progress (macOS)
