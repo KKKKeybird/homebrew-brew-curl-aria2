@@ -322,11 +322,12 @@ fi
 # curl is used only for this bounded capability check; aria2 owns the file.
 probe_dir="$(mktemp -d 2>/dev/null || true)"
 range_ok=0
+download_url="$url"
 if [ -n "$probe_dir" ]; then
   probe_args=(--disable --globoff --silent --location --fail --max-time 20
     --connect-timeout "${connect_timeout:-10}"
     --dump-header "$probe_dir/headers" --output "$probe_dir/body"
-    --write-out '%{http_code}')
+    --write-out '%{http_code}\n%{url_effective}')
   [ -n "$ua" ] && probe_args+=(--user-agent "$ua")
   [ -n "$referer" ] && probe_args+=(--referer "$referer")
   [ -n "$ca_cert" ] && probe_args+=(--cacert "$ca_cert")
@@ -335,17 +336,23 @@ if [ -n "$probe_dir" ]; then
   fi
   # aria2 needs HEAD's size before allocating pieces. Without it, its first
   # GET would again request the complete entity, even with pipelining enabled.
-  probe_code="$("$real_curl" "${probe_args[@]}" --head --output /dev/null -- "$url" 2>/dev/null)"
+  probe_result="$("$real_curl" "${probe_args[@]}" --head --output /dev/null -- "$url" 2>/dev/null)"
   probe_rc=$?
+  probe_code="${probe_result%%$'\n'*}"
   probe_size="$(awk '/^HTTP\// {s=""} tolower($1)=="content-length:" {s=$2; sub(/\r$/, "", s)} END {print s}' "$probe_dir/headers" 2>/dev/null)"
   if [ "$probe_rc" = 0 ] && [ "$probe_code" = 200 ] && [[ "$probe_size" =~ ^[0-9]+$ ]] && [ "$probe_size" != 0 ]; then
-    probe_code="$("$real_curl" "${probe_args[@]}" --range 0-0 --max-filesize 1 -- "$url" 2>/dev/null)"
+    probe_result="$("$real_curl" "${probe_args[@]}" --range 0-0 --max-filesize 1 -- "$url" 2>/dev/null)"
     probe_rc=$?
+    probe_code="${probe_result%%$'\n'*}"
     probe_range="$(awk '/^HTTP\// {r=""} tolower($1)=="content-range:" {r=$2 " " $3; sub(/\r$/, "", r)} END {print r}' "$probe_dir/headers" 2>/dev/null)"
     if [ "$probe_rc" = 0 ] && [ "$probe_code" = 206 ] &&
        [ "$probe_range" = "bytes 0-0/$probe_size" ] &&
        [ -f "$probe_dir/body" ] && [ "$(wc -c <"$probe_dir/body" | tr -d ' ')" = 1 ]; then
       range_ok=1
+      # Reuse the validated final URL so every worker does not repeat the
+      # redirect chain and race to reserve the same initial piece.
+      download_url="${probe_result#*$'\n'}"
+      case "$download_url" in http://*|https://*) ;; *) download_url="$url" ;; esac
     fi
   fi
   rm -f -- "$probe_dir/headers" "$probe_dir/body"
@@ -402,15 +409,15 @@ invoke_aria2() {
     # aria2 buffers carriage-return readouts on piped stdout. stderr is
     # unbuffered; merge it into our newline relay before Homebrew captures it.
     if [ -n "$errfile" ]; then
-      "${aria2_runner[@]}" "${args[@]}" --stderr=true -- "$url" 2>&1 | tee "$errfile"
+      "${aria2_runner[@]}" "${args[@]}" --stderr=true -- "$download_url" 2>&1 | tee "$errfile"
       return "${PIPESTATUS[0]}"
     else
-      "${aria2_runner[@]}" "${args[@]}" --stderr=true -- "$url" 2>&1
+      "${aria2_runner[@]}" "${args[@]}" --stderr=true -- "$download_url" 2>&1
     fi
   elif [ -n "$errfile" ]; then
-    "${aria2_runner[@]}" "${args[@]}" -- "$url" 2>"$errfile"
+    "${aria2_runner[@]}" "${args[@]}" -- "$download_url" 2>"$errfile"
   else
-    "${aria2_runner[@]}" "${args[@]}" -- "$url"
+    "${aria2_runner[@]}" "${args[@]}" -- "$download_url"
   fi
 }
 # Homebrew's ReadlineNonblock only forwards newline-terminated records.

@@ -17,7 +17,7 @@ if [[ " $* " == *" --head "* ]]; then
     fi
     shift
   done
-  printf 200
+  printf '200\nhttps://example.test/file'
   exit 0
 fi
 if [[ " $* " == *" --range 0-0 "* ]]; then
@@ -28,7 +28,7 @@ if [[ " $* " == *" --range 0-0 "* ]]; then
     esac
     shift
   done
-  printf 206
+  printf '206\nhttps://example.test/file'
   exit 0
 fi
 printf '%s\n' "$@" >"$TEST_CURL_ARGS"

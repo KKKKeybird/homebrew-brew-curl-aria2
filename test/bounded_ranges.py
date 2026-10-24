@@ -16,6 +16,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 DATA = os.urandom(32 * 1024 * 1024)
 ROWS = []
+REDIRECTS = []
 LOCK = threading.Lock()
 
 
@@ -46,6 +47,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/redirect':
+            with LOCK:
+                REDIRECTS.append(self.path)
             self.send_response(302)
             self.send_header('Location', '/file')
             self.send_header('Content-Length', '0')
@@ -81,6 +84,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def check(path, *, protocol='HTTP/1.1', resume=0, native=True):
     ROWS.clear()
+    REDIRECTS.clear()
     Handler.protocol_version = protocol
     server = Server(('127.0.0.1', 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -107,6 +111,8 @@ def check(path, *, protocol='HTTP/1.1', resume=0, native=True):
         server.shutdown()
         server.server_close()  # Join handlers before inspecting counters.
     total = sum(row['sent'] for row in ROWS)
+    if path == '/redirect':
+        assert len(REDIRECTS) == 1, 'aria2 workers repeated the probe redirect chain'
     if path in ('/no-head', '/head-no-size', '/no-range'):
         # Failed capability checks must never fan out full-file GETs.
         full = [row for row in ROWS if row['end'] - row['start'] + 1 == len(DATA)]
