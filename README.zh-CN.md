@@ -4,7 +4,7 @@
 
 `brew-curl-aria2` 是一个第三方 Homebrew tap。它把符合条件的文件下载交给 aria2c，在服务器支持 Range 请求时，对单个文件使用多个 HTTP 连接。其他 curl 请求仍由 curl 处理。
 
-项目不修改 Homebrew 源码，也不运行 aria2 后台服务。它通过 `HOMEBREW_CURL_PATH` 指定兼容 curl 的包装脚本。当前 Homebrew 的 macOS 实现会读取该变量，但[官方环境变量文档](https://docs.brew.sh/Manpage#environment)仅将其列为 Linux 用途，因此不能保证未来版本继续兼容。
+项目不运行后台服务。对于把 `HOMEBREW_CURL_PATH` 当作建议的新版本 Homebrew，`enable` 会在 `setup_curl()` 加入可撤销的本插件专用补丁，并通过终端包装器协调更新后的重新注入。遇到无法识别的上游源码变化时，会提示并回退普通 curl。
 
 ## 安装
 
@@ -18,7 +18,15 @@ brew-curl-aria2 status
 
 Formula 会自动安装 aria2 依赖。单独安装不会改变 Homebrew 的下载行为；`enable` 会把包装脚本路径写入 Homebrew 用户环境文件。设置了 `XDG_CONFIG_HOME` 时，文件位于 `$XDG_CONFIG_HOME/homebrew/brew.env`，否则位于 `~/.homebrew/brew.env`。
 
-此后照常运行 `brew upgrade --cask <名称>` 等命令。已缓存的文件不会重新下载。
+启用后打开新终端，或重新加载 shell 启动文件，再照常运行 `brew upgrade --cask <名称>` 等命令。已缓存的文件不会重新下载。
+
+`enable` 给 zsh 的 `.zshrc`（遵循 `ZDOTDIR`）、bash 的 `.bashrc` 和当前使用的 bash 登录配置添加带标记的加载块。`disable` 只移除本插件的加载块、环境配置及源码补丁，保留其他修改；当前 shell 已加载的函数会在禁用后直接透传。
+
+终端包装器接管 `install`、`upgrade`、`update/up`、`update-reset`，用仓库级锁串行处理更新、修补和命令运行。需要更新时先撤销自己的补丁，更新后再应用。自动更新判断复用经过摘要验证的 Homebrew 原脚本，保留更新间隔和第三方 tap 规则。未知版本沿用原生更新流程，命令结束后恢复补丁，因此该次下载不保证使用 aria2。显式更新保留退出码；自动更新失败会明确提示，再沿用已有数据继续安装。
+
+直接调用 `/opt/homebrew/bin/brew`、GUI、其他命令及命令名前有全局选项的调用，不保证自动修复，但补丁存在时仍可能使用 aria2。没有后台监听。手动修复命令为 `brew-curl-aria2 repair-homebrew`。
+
+`status` 分别报告启用意图、当前是否观察到 shell 包装器、补丁状态和 Homebrew 实际选择的 curl。选中插件不意味着每个请求都用 aria2；无法保留语义的请求仍透传 curl。
 
 ## 请求处理
 
@@ -56,7 +64,7 @@ python3 test/resume.py
 python3 test/bounded_ranges.py
 ```
 
-自检命令会下载小文件，并检查 aria2c 分流与 curl 透传。仓库测试使用模拟可执行文件，在 macOS 和 Linux CI 中运行。
+自检命令先检查 aria2c 分流与 curl 透传，再通过真实 Homebrew 获取全新 Resource，确认 aria2 调用，并与独立 curl 下载结果比对 SHA-256。仓库测试使用模拟可执行文件，在 macOS 和 Linux CI 中运行。
 
 ## 发布
 
@@ -85,3 +93,7 @@ MIT。本项目与 Homebrew、aria2 官方无关联。
 进度表示已确认的连续前缀，可能落后于文件其他位置的下载。桥接禁用 aria2 磁盘缓存并优先按顺序选择分段，同时保留多连接；同步前缀会增加磁盘写入和临时空间。它使用 Homebrew 已选择的 Ruby，验证 aria2 v1 HTTP 状态格式；缺少运行环境或遇到未知格式时跳过进度同步，下载和最终校验照常进行。可设置 `HOMEBREW_BREW_CURL_ARIA2_NATIVE_PROGRESS=0` 关闭此功能。
 
 Homebrew 原生并发界面不显示 aria2 的连接数、速度和预计剩余时间；串行下载仍可显示 aria2 的详细状态。验证：`ruby test/contiguous_progress.rb` 和 `python3 test/parallel_progress.py`。
+
+对于 `--header @-` 等从文件或标准输入读取请求头的选项，原样透传 curl，不读取或记录认证内容。证书目录有哈希 CA/CRL 条目时也透传；只有 Homebrew 注入的证书包父目录不增加额外哈希信任条目时才交给 aria2，并保留证书包。
+
+内联 Authorization、Proxy-Authorization 和 Cookie 请求头也透传 curl，保留跨域重定向的认证限制。因此，带认证的 GHCR bottle 请求可能按设计使用 curl。

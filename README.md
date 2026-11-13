@@ -4,7 +4,7 @@ English · [简体中文](README.zh-CN.md)
 
 `brew-curl-aria2` is a third-party Homebrew tap that routes eligible file downloads through aria2c. It uses multiple HTTP connections for a single file when the server supports range requests. Other curl operations stay with curl.
 
-The project does not modify Homebrew's source code and does not run an aria2 daemon. It uses `HOMEBREW_CURL_PATH` to select a curl-compatible wrapper. Homebrew currently honors this setting on macOS, although its [environment reference](https://docs.brew.sh/Manpage#environment) documents the variable for Linux. Compatibility with future Homebrew releases is therefore not guaranteed.
+The project uses a curl-compatible shim and does not run a daemon. On Homebrew versions that treat `HOMEBREW_CURL_PATH` as a suggestion, `enable` adds a reversible, plugin-specific patch to `setup_curl()`. A terminal wrapper coordinates Homebrew updates and reapplies the patch before installation. Unsupported upstream source changes are reported and use ordinary curl.
 
 ## Installation
 
@@ -18,7 +18,15 @@ brew-curl-aria2 status
 
 The formula installs aria2 as a dependency. Installation alone does not change Homebrew's download behavior; `enable` writes the wrapper path to Homebrew's user environment file. The location is `$XDG_CONFIG_HOME/homebrew/brew.env` when `XDG_CONFIG_HOME` is set, or `~/.homebrew/brew.env` otherwise.
 
-Continue to use normal Homebrew commands, such as `brew upgrade --cask <name>`. Already cached files do not need another download.
+Open a new terminal after enabling (or reload your shell startup file), then use normal Homebrew commands such as `brew upgrade --cask <name>`. Already cached files do not need another download.
+
+`enable` adds marked loader blocks to zsh's `.zshrc` (under `ZDOTDIR` when set), bash's `.bashrc`, and the active bash login file. `disable` removes these blocks and only this project's source patch and environment entries, preserving unrelated changes. A wrapper already loaded in a disabled shell passes commands through.
+
+For terminal `install`, `upgrade`, `update`/`up`, and `update-reset`, the wrapper serializes the update/patch/command lifecycle with a repository lock. It removes its own patch before updating, then reapplies it against the new source. Automatic update decisions use a digest-verified adapter to Homebrew's own interval and tap rules; unknown versions keep native update behaviour and restore the patch after the command, so aria2 is not guaranteed during that command. Explicit update failures retain their exit codes; automatic update failures are reported before continuing with available data.
+
+Direct `/opt/homebrew/bin/brew` calls, GUI calls, other commands and calls with leading global options bypass automatic repair. They may still use aria2 while the patch is present. There is no background watcher. Run `brew-curl-aria2 repair-homebrew` to restore a missing patch manually. Do not uninstall without disabling first.
+
+The patch respects `HOMEBREW_FORCE_BREWED_CURL`. `status` reports enable intent, the observed shell wrapper, patch presence and Homebrew's actual selected curl. Selecting the shim does not guarantee every request uses aria2: unsupported semantics still fall back to curl.
 
 ## Request handling
 
@@ -60,7 +68,7 @@ ruby test/contiguous_progress.rb
 python3 test/parallel_progress.py
 ```
 
-The self-test downloads a small file and checks both aria2c routing and curl pass-through. CI on macOS and Linux runs both mock routing tests and real aria2c downloads against a local range server, verifying resumed files by SHA-256.
+The self-test checks routing and curl pass-through, then fetches a fresh resource through real Homebrew and verifies aria2 invocation and SHA-256 against an independent curl download. CI on macOS and Linux runs both mock routing tests and real aria2c downloads against a local range server, verifying resumed files by SHA-256.
 
 ## Releases
 
@@ -79,3 +87,7 @@ Run `disable` before uninstalling so that `HOMEBREW_CURL_PATH` does not point to
 ## License
 
 MIT. This project is not affiliated with Homebrew or aria2.
+
+Certificate directories containing hashed CA/CRL entries and curl header-file options (including `--header @-`) are delegated unchanged to curl. Homebrew's injected bundle-parent CA directory is accepted only when it adds no hashed trust entries; the bundle is passed to aria2. Authentication headers read from stdin are never consumed or logged by the shim.
+
+Inline Authorization, Proxy-Authorization and Cookie headers also use curl to preserve its cross-origin redirect restrictions. Consequently, authenticated GHCR bottle requests may intentionally use curl.

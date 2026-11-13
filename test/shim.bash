@@ -60,6 +60,17 @@ printf 'aria2 result' >"$dir/$out"
 EOF
 chmod +x "$fixture/opt/curl/bin/curl" "$fixture/bin/aria2c"
 
+mkdir -p "$fixture/home" "$fixture/Library/Homebrew/utils"
+export HOME="$fixture/home"
+cp "$repo/test/fixtures/homebrew-curl.sh" "$fixture/Library/Homebrew/utils/curl.sh"
+cat >"$fixture/bin/brew" <<'EOF'
+#!/bin/bash
+case "$1" in
+  --repository) printf '%s\n' "$HOMEBREW_PREFIX" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fixture/bin/brew"
 export HOMEBREW_PREFIX="$fixture"
 export XDG_CONFIG_HOME="$fixture/config"
 export PATH="$fixture/bin:$PATH"
@@ -156,6 +167,28 @@ TEST_ARIA2_FAIL=1 "$shim" --output "$fixture/out" --location https://example.tes
 [ -f "$TEST_CURL_ARGS" ] && [ -f "$TEST_ARIA2_ARGS" ] || fail 'aria2c failure should retry curl'
 [ "$(cat "$fixture/out")" = 'curl result' ] || fail 'curl did not replace failed aria2c output'
 [ ! -e "$fixture/out.aria2" ] || fail 'failed aria2c state left behind'
+
+# File/stdin headers must retain stdin for real curl; never forward @- literally.
+reset
+printf 'Authorization: Bearer test-secret\n' | "$shim" --header @- --output "$fixture/out" --location https://example.test/file
+assert_curl 'stdin headers must safely pass through real curl'
+grep -q '^@-$' "$TEST_CURL_ARGS" || fail 'stdin header option changed'
+
+reset
+"$shim" --header 'Authorization: Bearer test-secret' --output "$fixture/out" --location https://example.test/file
+assert_curl 'authorization must preserve curl redirect policy'
+
+# Homebrew bundle-parent injection without hashed CA roots is compatible.
+reset
+mkdir -p "$fixture/certs"
+printf 'test CA bundle' >"$fixture/certs/ca.pem"
+"$shim" --cacert "$fixture/certs/ca.pem" --capath "$fixture/certs" --output "$fixture/out" --location https://example.test/file
+assert_aria2 'bundle-parent CA directory should use aria2'
+grep -q -- "--ca-certificate=$fixture/certs/ca.pem" "$TEST_ARIA2_ARGS" || fail 'CA bundle was dropped'
+reset
+: >"$fixture/certs/1234abcd.0"
+"$shim" --cacert "$fixture/certs/ca.pem" --capath "$fixture/certs" --output "$fixture/out" --location https://example.test/file
+assert_curl 'hashed CA directory must preserve curl trust semantics'
 
 env_file="$XDG_CONFIG_HOME/homebrew/brew.env"
 printf 'HOMEBREW_CURL_PATH=/another/curl\nOTHER_SETTING=1\n' >"$env_file"

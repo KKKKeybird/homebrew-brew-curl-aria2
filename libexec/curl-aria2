@@ -86,6 +86,7 @@ progress=1
 progress_bar=0
 remote_time=0
 ca_cert=""
+ca_path=""
 create_dirs=0
 post=0
 head=0
@@ -104,6 +105,7 @@ while [ $# -gt 0 ]; do
       [ $# -gt 1 ] || to_curl "missing-value:$1"; ua="$2"; shift 2 ;;
     --header|-H)
       [ $# -gt 1 ] || to_curl "missing-value:$1"
+      case "$2" in @*) to_curl "header-file" ;; esac
       headers[header_count]="$2"
       header_count=$((header_count + 1))
       shift 2 ;;
@@ -124,7 +126,9 @@ while [ $# -gt 0 ]; do
       # Homebrew normally passes /dev/null to start with an empty cookie jar.
       [ "$2" = /dev/null ] || to_curl "unsupported-cookie"
       shift 2 ;;
-    --capath|-b|--cookie-jar|-c|-x|--proxy|--limit-rate)
+    --capath)
+      [ $# -gt 1 ] || to_curl "missing-value:$1"; ca_path="$2"; shift 2 ;;
+    -b|--cookie-jar|-c|-x|--proxy|--limit-rate)
       to_curl "unsupported-option:$1" ;;
     --continue-at|-C)
       [ $# -gt 1 ] || to_curl "missing-value:$1"
@@ -171,6 +175,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# aria2 has a CA bundle option but no OpenSSL CA directory option. Homebrew
+# injects the bundle's parent directory; that adds no trust when it contains no
+# hashed CA/CRL entries. Preserve that case, otherwise delegate unchanged.
+if [ -n "$ca_path" ]; then
+  [ -n "$ca_cert" ] && [ -f "$ca_cert" ] && [ -d "$ca_path" ] &&
+    [ "$(cd "$ca_path" && pwd -P)" = "$(cd "$(dirname "$ca_cert")" && pwd -P)" ] || to_curl "unsupported-ca-directory"
+  for ca_entry in "$ca_path"/*; do
+    ca_name="${ca_entry##*/}"
+    [[ "$ca_name" =~ ^[0-9a-fA-F]{8}\.(r)?[0-9]+$ ]] && to_curl "hashed-ca-directory"
+  done
+fi
+
 # --- decide whether this is a plain file download ---------------------------
 [ -n "$out" ] || to_curl "no-output-option"
 [ "$out" != - ] || to_curl "stdout-output"
@@ -183,6 +199,7 @@ if [ "$header_count" -gt 0 ]; then
   for h in "${headers[@]}"; do
     case "$(printf '%s' "${h%%:*}" | tr '[:upper:]' '[:lower:]')" in
       range|if-range|accept-encoding) to_curl "custom-range-or-encoding" ;;
+      authorization|proxy-authorization|cookie) to_curl "sensitive-header" ;;
     esac
   done
 fi
