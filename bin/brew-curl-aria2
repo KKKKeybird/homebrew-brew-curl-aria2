@@ -1,13 +1,8 @@
 #!/bin/bash
 # brew-curl-aria2 - enable/disable/inspect Homebrew's aria2c download backend.
 #
-# Homebrew's only supported hook for this is HOMEBREW_CURL_PATH (see
-# Library/Homebrew/utils/curl.sh and Library/Homebrew/shims/shared/curl), which
-# is read from Homebrew's user environment file:
-#   $XDG_CONFIG_HOME/homebrew/brew.env  or  ~/.homebrew/brew.env
-#
-# This command writes exactly one line there - "enable" and "disable" are a
-# single line apart, so nothing about your Homebrew install is patched.
+# enable manages brew.env, a reversible setup_curl patch and a shell wrapper.
+# Absolute-path brew calls bypass automatic update repair.
 
 set -u
 
@@ -20,7 +15,7 @@ find_shim() {
   local installed="$PREFIX/opt/brew-curl-aria2/libexec/curl-aria2"
   local sibling
   sibling="$(cd "$(dirname "$SELF")/.." 2>/dev/null && pwd)/libexec/curl-aria2"
-  for candidate in "$installed" "$sibling"; do
+  for candidate in "$sibling" "$installed"; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
       return 0
@@ -52,6 +47,26 @@ current_backend() {
   fi
 }
 
+compat() {
+  local helper ruby_bin candidate
+  helper="$(dirname "$SHIM")/homebrew-compat.rb"
+  ruby_bin="${HOMEBREW_RUBY_PATH:-$(command -v ruby 2>/dev/null || true)}"
+  if [ -z "$ruby_bin" ] || [ ! -x "$ruby_bin" ]; then
+    for candidate in "$PREFIX/Library/Homebrew/vendor/portable-ruby/current/bin/ruby" \
+                     "$PREFIX/Homebrew/Library/Homebrew/vendor/portable-ruby/current/bin/ruby"; do
+      if [ -x "$candidate" ]; then ruby_bin="$candidate"; break; fi
+    done
+  fi
+  if [ -n "$ruby_bin" ] && [ -x "$ruby_bin" ]; then
+    if [ "$1" = wrap ]; then
+      exec "$ruby_bin" "$helper" "$1" "$PREFIX" "$SHIM" "${@:2}"
+    fi
+    "$ruby_bin" "$helper" "$1" "$PREFIX" "$SHIM" "${@:2}"
+  else
+    die "找不到 Ruby 运行时；请先运行 brew config 完成 Homebrew 初始化"
+  fi
+}
+
 cmd_enable() {
   [ -n "$SHIM" ] || die "找不到 curl-aria2 shim，请先 brew install brew-curl-aria2"
   command -v aria2c >/dev/null 2>&1 || die "缺少 aria2c，请先 brew install aria2"
@@ -69,7 +84,8 @@ cmd_enable() {
   fi
   if [ "$existing" = "HOMEBREW_CURL_PATH=$SHIM" ]; then
     printf '已启用 aria2c 下载后端（配置未变）。\n'
-    return 0
+    compat enable
+    return $?
   fi
 
   tmp="$(mktemp)"
@@ -82,10 +98,12 @@ cmd_enable() {
   printf '  配置文件: %s\n' "$f"
   printf '  curl 替换: %s\n' "$SHIM"
   printf '  并发连接: %s (可用 BREW_CURL_ARIA2_CONNECTIONS 调整)\n' "${BREW_CURL_ARIA2_CONNECTIONS:-8}"
+  compat enable || return $?
   printf '\n验证: %s test\n' "$SELF"
 }
 
 cmd_disable() {
+  compat disable || return $?
   local f tmp expected
   f="$(env_file)"
   [ -f "$f" ] || { printf '未启用（%s 不存在）。\n' "$f"; return 0; }
@@ -131,7 +149,7 @@ cmd_status() {
   if [ -z "$SHIM" ]; then
     return 1
   fi
-  return 0
+  compat status
 }
 
 cmd_test() {
@@ -181,6 +199,7 @@ cmd_test() {
   fi
 
   rm -rf "$dir"
+  compat test "$url" || return $?
   printf '\n全部通过。\n'
 }
 
@@ -215,10 +234,11 @@ usage() {
 brew-curl-aria2 $VERSION - 让 Homebrew 用 aria2c 多线程下载
 
 用法:
-  brew-curl-aria2 enable        写入 HOMEBREW_CURL_PATH（默认关，显式开启）
-  brew-curl-aria2 disable       移除该配置，恢复 curl
+  brew-curl-aria2 enable        配置下载器、兼容补丁与终端包装器
+  brew-curl-aria2 disable       撤销本插件配置、兼容补丁与终端包装器
   brew-curl-aria2 status        查看当前状态与告警
   brew-curl-aria2 test [URL]    端到端自检（默认用 brew 镜像上的小文件）
+  brew-curl-aria2 repair-homebrew 检查并恢复 Homebrew 兼容补丁
   brew-curl-aria2 repair-cache  迁移旧版下载状态，修复缓存目录冲突
   brew-curl-aria2 version
 
@@ -234,6 +254,8 @@ case "${1:-}" in
   enable) shift; cmd_enable "$@" ;;
   disable) shift; cmd_disable "$@" ;;
   status) shift; cmd_status "$@" ;;
+  repair-homebrew) shift; compat repair-homebrew "$@" ;;
+  wrap) shift; compat wrap "$@" ;;
   repair-cache) shift; cmd_repair_cache "$@" ;;
   test) shift; cmd_test "$@" ;;
   version|--version|-v) cmd_version ;;

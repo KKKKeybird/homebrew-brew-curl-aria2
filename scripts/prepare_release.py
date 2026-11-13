@@ -17,6 +17,10 @@ PACKAGE_FILES = (
     "bin/brew-curl-aria2",
     "libexec/curl-aria2",
     "libexec/contiguous-progress.rb",
+    "libexec/homebrew-compat.rb",
+    "libexec/curl-selection.sh",
+    "libexec/brew-wrapper.sh",
+    "libexec/auto-update-adapter.sh",
 )
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 

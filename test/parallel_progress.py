@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify native Homebrew parallel progress via HOMEBREW_CURL_PATH alone."""
+"""Verify native progress through a Homebrew with the compatibility patch."""
 import fcntl
 import hashlib
 import http.server
@@ -58,7 +58,7 @@ try:
         cache = Path(directory)
         config = cache/'config/homebrew'
         config.mkdir(parents=True)
-        (config/'brew.env').write_text(f'HOMEBREW_CURL_PATH={ROOT}/libexec/curl-aria2\n')
+        (config/'brew.env').write_text(f'HOMEBREW_CURL_PATH={ROOT}/libexec/curl-aria2\nHOMEBREW_BREW_CURL_ARIA2_SHIM={ROOT}/libexec/curl-aria2\n')
         env = os.environ.copy()
         env.update(HOMEBREW_PROGRESS_TEST_URL=f'http://127.0.0.1:{server.server_port}/file',
                    HOMEBREW_CACHE=directory, XDG_CONFIG_HOME=str(cache/'config'),
@@ -83,7 +83,7 @@ resources.each { |r| abort "checksum failure" unless Digest::SHA256.file(r.cache
 '''
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 80, 0, 0))
-        process = subprocess.Popen([shutil.which('brew'), 'ruby', '-e', ruby], env=env, stdout=slave, stderr=slave)
+        process = subprocess.Popen([os.environ.get('BREW_CURL_ARIA2_TEST_BREW', shutil.which('brew')), 'ruby', '-e', ruby], env=env, stdout=slave, stderr=slave)
         os.close(slave)
         captured = bytearray()
         overlap = False

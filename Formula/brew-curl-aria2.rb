@@ -10,7 +10,7 @@ class BrewCurlAria2 < Formula
 
   def install
     bin.install "bin/brew-curl-aria2"
-    libexec.install "libexec/curl-aria2", "libexec/contiguous-progress.rb"
+    libexec.install Dir["libexec/*"]
   end
 
   def caveats
@@ -22,8 +22,11 @@ class BrewCurlAria2 < Formula
         brew-curl-aria2 enable
         brew-curl-aria2 test
 
-      This writes a single HOMEBREW_CURL_PATH line to Homebrew's user
-      environment file. Undo it at any time with:
+      This configures brew.env, patches Homebrew's curl selection, and adds
+      a marked wrapper loader to zsh/bash startup files. Open a new terminal
+      after enabling. The wrapper repairs the patch after Homebrew updates.
+      Absolute-path brew and GUI calls bypass automatic repair.
+      Undo this project's changes at any time with:
         brew-curl-aria2 disable
     EOS
   end

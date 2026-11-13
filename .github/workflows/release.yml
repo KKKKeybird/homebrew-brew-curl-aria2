@@ -25,6 +25,8 @@ jobs:
           fetch-depth: 0
       - name: Test shim
         run: bash test/shim.bash
+      - name: Test compatibility lifecycle
+        run: ruby test/compatibility.rb
       - name: Prepare release
         env:
           RELEASE_VERSION: ${{ inputs.version }}
