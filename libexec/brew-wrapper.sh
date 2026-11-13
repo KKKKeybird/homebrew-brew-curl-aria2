@@ -4,10 +4,16 @@ brew() {
   if [ -n "${ZSH_VERSION:-}" ]; then emulate -L sh; fi
   if [ "${BREW_CURL_ARIA2_WRAPPER_ACTIVE:-}" = 1 ]; then
     command "$BREW_CURL_ARIA2_REAL_BREW" "$@"
-  elif [ -x "$BREW_CURL_ARIA2_CONTROL" ]; then
-    BREW_CURL_ARIA2_WRAPPER_LOADED=1 "$BREW_CURL_ARIA2_CONTROL" wrap "$@"
   else
-    command "$BREW_CURL_ARIA2_REAL_BREW" "$@"
+    case "${1:-}" in
+      install|upgrade|update|up|update-reset)
+        if [ -x "$BREW_CURL_ARIA2_CONTROL" ]; then
+          BREW_CURL_ARIA2_WRAPPER_LOADED=1 "$BREW_CURL_ARIA2_CONTROL" wrap "$@"
+        else
+          command "$BREW_CURL_ARIA2_REAL_BREW" "$@"
+        fi ;;
+      *) command "$BREW_CURL_ARIA2_REAL_BREW" "$@" ;;
+    esac
   fi
 }
 export BREW_CURL_ARIA2_WRAPPER_LOADED=1

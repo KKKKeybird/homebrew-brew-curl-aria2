@@ -197,6 +197,13 @@ class CompatibilityTest < Minitest::Test
       _, err, status=Open3.capture3(@env.merge("HOMEBREW_NO_AUTO_UPDATE"=>"1"),shell,"-c",script,"shell",rcfile,:unsetenv_others=>true)
       assert status.success?, err
       assert_equal ["install","name with spaces","--force"], events.last["args"]
+      # Queries must bypass Ruby/state parsing even if the state is damaged.
+      state=File.join(@config,"brew-curl-aria2.json")
+      saved=File.read(state)
+      File.write(state,"invalid json")
+      _,err,status=Open3.capture3(@env,shell,"-c",'source "$1"; brew --version',"shell",rcfile,:unsetenv_others=>true)
+      assert status.success?,err
+      File.write(state,saved)
     end
   end
 
