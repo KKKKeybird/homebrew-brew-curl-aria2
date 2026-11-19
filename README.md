@@ -88,6 +88,6 @@ Run `disable` before uninstalling so that `HOMEBREW_CURL_PATH` does not point to
 
 MIT. This project is not affiliated with Homebrew or aria2.
 
-Certificate directories containing hashed CA/CRL entries and curl header-file options (including `--header @-`) are delegated unchanged to curl. Homebrew's injected bundle-parent CA directory is accepted only when it adds no hashed trust entries; the bundle is passed to aria2. Authentication headers read from stdin are never consumed or logged by the shim.
+HTTPS downloads authenticated by one Bearer or GitHub token header, including Homebrew’s `--header @-` requests, can use aria2 when curl obtains an HTTPS redirect that works without the authentication header and supports byte ranges. This covers GHCR bottles and compatible release assets. The original headers are replayed if curl must finish the download. Other header files, cookies, and proxy authorization use curl.
 
-Inline Authorization, Proxy-Authorization and Cookie headers also use curl to preserve its cross-origin redirect restrictions. Consequently, authenticated GHCR bottle requests may intentionally use curl.
+Certificate directories containing hashed CA/CRL entries use curl. Homebrew’s injected bundle-parent directory is accepted when it adds no hashed trust entries, and the certificate bundle is passed to aria2.

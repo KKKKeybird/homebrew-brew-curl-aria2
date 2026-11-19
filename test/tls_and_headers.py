@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify real TLS trust and unconsumed stdin authentication during fallback."""
+"""Verify TLS trust, authenticated redirects, and byte-for-byte curl fallback."""
 import hashlib
 import http.server
 import os
@@ -12,6 +12,9 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = os.urandom(3 * 1024 * 1024)
+SECRET = "acceptance-secret"
+SIGNED_QUERY = "signature=temporary-credential"
+DELIVERY_REQUESTS = []
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -31,9 +34,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.serve(True)
 
     def serve(self, body):
-        if self.path == "/authenticated" and self.headers.get("Authorization") != "Bearer acceptance-secret":
-            self.send_error(401)
-            return
+        if self.server is delivery:
+            DELIVERY_REQUESTS.append((self.headers.get("Authorization"), self.headers.get("Range")))
+            if self.headers.get("Authorization") or not self.path.endswith("?" + SIGNED_QUERY):
+                self.send_error(403)
+                return
+            if self.path.startswith("/broken?") and body and self.headers.get("Range") != "bytes=0-0":
+                self.send_error(503)
+                return
+        elif self.path in ("/authenticated", "/basic", "/redirect", "/fallback-redirect"):
+            allowed = (f"Basic {SECRET}",) if self.path == "/basic" else (f"Bearer {SECRET}", f"token {SECRET}")
+            if self.headers.get("Authorization") not in allowed:
+                self.send_error(401)
+                return
+            if self.path == "/redirect" or (self.path == "/fallback-redirect" and self.headers.get("Range")):
+                target = "broken" if self.path == "/fallback-redirect" else "file"
+                self.send_response(307)
+                self.send_header("Location", f"https://127.0.0.1:{delivery.server_port}/{target}?{SIGNED_QUERY}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
         start, end = 0, len(DATA) - 1
         value = self.headers.get("Range")
         if value:
@@ -61,11 +81,15 @@ with tempfile.TemporaryDirectory(prefix="aria2-trust-") as temporary:
                         "-subj", f"/CN={name}", "-addext", "subjectAltName=IP:127.0.0.1",
                         "-keyout", str(tmp / f"{name}.key"), "-out", str(tmp / f"{name}.pem")],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(tmp / "server.pem", tmp / "server.key")
-    server.socket = context.wrap_socket(server.socket, server_side=True)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    def start_server():
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    server, delivery = start_server(), start_server()
     env = {k: v for k, v in os.environ.items() if not k.startswith(("HOMEBREW_", "BREW_CURL_ARIA2_"))}
     if shutil.which("brew"):
         env["HOMEBREW_PREFIX"] = subprocess.check_output(["brew", "--prefix"], text=True).strip()
@@ -94,8 +118,42 @@ with tempfile.TemporaryDirectory(prefix="aria2-trust-") as temporary:
         assert result.returncode == 0, result.stderr.decode()
         assert output.read_bytes() == DATA
         log = (tmp / "decisions.log").read_text()
-        assert "reason=header-file" in log
-        assert "acceptance-secret" not in log
+        assert "reason=auth-no-https-redirect" in log
+
+        result, output = download("basic", tmp / "server.pem", ("--header", "@-"),
+                                  path="/basic",
+                                  headers=f"Authorization: Basic {SECRET}\r\n".encode())
+        assert result.returncode == 0, result.stderr.decode()
+        assert output.read_bytes() == DATA
+        assert "reason=unsupported-auth-header" in (tmp / "decisions.log").read_text()
+
+        for options, headers in (
+            (("--header", "@-"), f"Authorization: Bearer {SECRET}\r\n".encode()),
+            (("--header", f"Authorization: token {SECRET}",
+              "--header", "Accept: application/octet-stream"), None),
+        ):
+            DELIVERY_REQUESTS.clear()
+            (tmp / "decisions.log").write_text("")
+            result, output = download("redirect", tmp / "server.pem", options,
+                                      path="/redirect", headers=headers)
+            assert result.returncode == 0, result.stderr.decode()
+            assert output.read_bytes() == DATA
+            output.unlink()
+            log = (tmp / "decisions.log").read_text()
+            assert "backend=aria2c auth-redirect" in log and "backend=aria2c ok" in log, log
+            assert all(auth is None for auth, _ in DELIVERY_REQUESTS)
+            assert any(value not in (None, "bytes=0-0") for _, value in DELIVERY_REQUESTS)
+            assert SECRET not in log and SIGNED_QUERY not in log
+            assert SIGNED_QUERY.encode() not in result.stdout + result.stderr
+
+        (tmp / "decisions.log").write_text("")
+        result, output = download("retry", tmp / "server.pem", ("--retry", "0", "--header", "@-"),
+                                  path="/fallback-redirect", headers=f"Authorization: Bearer {SECRET}\n".encode())
+        assert result.returncode == 0, result.stderr.decode()
+        assert output.read_bytes() == DATA
+        log = (tmp / "decisions.log").read_text()
+        assert "backend=aria2c auth-redirect" in log and "falling back to curl" in log, log
+        assert SECRET not in log and SIGNED_QUERY not in log
 
         cert_hash = subprocess.check_output(["openssl", "x509", "-hash", "-noout", "-in", str(tmp / "server.pem")], text=True).strip()
         (tmp / f"{cert_hash}.0").symlink_to(tmp / "server.pem")
@@ -103,6 +161,7 @@ with tempfile.TemporaryDirectory(prefix="aria2-trust-") as temporary:
         assert result.returncode == 0, result.stderr.decode()
         assert output.read_bytes() == DATA
         assert "reason=hashed-ca-directory" in (tmp / "decisions.log").read_text()
-        print("PASS: aria2 TLS bundle trust, rejection of untrusted TLS, authenticated stdin fallback, hashed CA-directory trust, SHA-256 and secret-free decisions")
+        print("PASS: TLS trust, authenticated parallel redirects, original-header fallback, and credential-free diagnostics")
     finally:
         server.shutdown()
+        delivery.shutdown()

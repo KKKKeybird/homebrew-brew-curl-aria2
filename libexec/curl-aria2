@@ -55,6 +55,15 @@ if [ -z "$real_curl" ]; then
   exit 1
 fi
 
+header_input=""
+run_original_curl() {
+  if [ -n "$header_input" ]; then
+    "$real_curl" "${orig[@]}" <"$header_input"
+  else
+    "$real_curl" "${orig[@]}"
+  fi
+}
+
 to_curl() {
   # Never ask curl to resume an old aria2 sparse file. Inspect the original
   # arguments because routing can occur before argument parsing is complete.
@@ -71,6 +80,10 @@ to_curl() {
     exit 1
   fi
   log "backend=curl reason=$1"
+  if [ -n "$header_input" ]; then
+    run_original_curl
+    exit $?
+  fi
   exec "$real_curl" "${orig[@]}"
 }
 
@@ -94,6 +107,8 @@ dump_header=0
 resume=0
 headers=()
 header_count=0
+stdin_header=0
+auth_header=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -105,9 +120,21 @@ while [ $# -gt 0 ]; do
       [ $# -gt 1 ] || to_curl "missing-value:$1"; ua="$2"; shift 2 ;;
     --header|-H)
       [ $# -gt 1 ] || to_curl "missing-value:$1"
-      case "$2" in @*) to_curl "header-file" ;; esac
-      headers[header_count]="$2"
-      header_count=$((header_count + 1))
+      case "$2" in
+        @-)
+          [ "$stdin_header" = 0 ] || to_curl "multiple-stdin-headers"
+          stdin_header=1 ;;
+        @*) to_curl "header-file" ;;
+        *)
+          name="$(printf '%s' "${2%%:*}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$name" = authorization ]; then
+            [ -z "$auth_header" ] || to_curl "multiple-authorization-headers"
+            auth_header="$2"
+          else
+            headers[header_count]="$2"
+            header_count=$((header_count + 1))
+          fi ;;
+      esac
       shift 2 ;;
     --referer|-e)
       [ $# -gt 1 ] || to_curl "missing-value:$1"; referer="$2"; shift 2 ;;
@@ -199,7 +226,7 @@ if [ "$header_count" -gt 0 ]; then
   for h in "${headers[@]}"; do
     case "$(printf '%s' "${h%%:*}" | tr '[:upper:]' '[:lower:]')" in
       range|if-range|accept-encoding) to_curl "custom-range-or-encoding" ;;
-      authorization|proxy-authorization|cookie) to_curl "sensitive-header" ;;
+      proxy-authorization|cookie) to_curl "sensitive-header" ;;
     esac
   done
 fi
@@ -226,6 +253,124 @@ if [ -z "$aria2c" ]; then
 fi
 [ -n "$aria2c" ] || to_curl "aria2c-not-installed"
 
+# Only a single bearer/token header gets the redirect handoff. Other stdin
+# content is replayed byte-for-byte if the operation falls back to curl.
+authenticated=0
+auth_file=""
+if [ "$stdin_header" = 1 ] || [ -n "$auth_header" ]; then
+  case "$url" in https://*) ;; *) to_curl "auth-requires-https" ;; esac
+  [ "$stdin_header" = 0 ] || [ -z "$auth_header" ] || to_curl "multiple-authorization-headers"
+  if [ "$header_count" -gt 0 ]; then
+    for h in "${headers[@]}"; do
+      case "$(printf '%s' "${h%%:*}" | tr '[:upper:]' '[:lower:]')" in
+        accept|accept-language) ;;
+        *) to_curl "auth-extra-headers" ;;
+      esac
+    done
+  fi
+  auth_file="$(umask 077; mktemp)" || to_curl "auth-buffer-unavailable"
+  trap 'rm -f -- "$auth_file"' EXIT
+  if [ "$stdin_header" = 1 ]; then
+    cat >"$auth_file" || exit 1
+    header_input="$auth_file"
+  else
+    printf '%s\n' "$auth_header" >"$auth_file" || to_curl "auth-buffer-unavailable"
+  fi
+  LC_ALL=C awk '
+    NR != 1 || tolower($0) !~ /^authorization:[ \t]*(bearer|token)[ \t]+[a-z0-9._~+\/=-]+[ \t]*\r?$/ { bad = 1 }
+    END { exit (bad || NR != 1) }
+  ' "$auth_file" || to_curl "unsupported-auth-header"
+  authenticated=1
+fi
+
+private_https_url() {
+  local authority="${1#https://}"
+  authority="${authority%%[/?]*}"
+  case "$authority" in ''|*@*) return 1 ;; esac
+  # These characters would change the meaning of the curl config or aria2
+  # input-file formats. Redirect targets must already be URL encoded.
+  case "$1" in
+    *[[:space:][:cntrl:]]*|*'"'*|*'\'*|*'#'*) return 1 ;;
+    https://?*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+probe_curl() {
+  if [ "$authenticated" = 1 ]; then
+    printf 'url = "%s"\n' "$probe_url" | "$real_curl" "${probe_args[@]}" "$@" --config -
+  else
+    "$real_curl" "${probe_args[@]}" "$@" -- "$probe_url"
+  fi
+}
+
+# Validate an actual range response before allowing parallel GETs. A server
+# advertising Accept-Ranges may still ignore Range; never fan that out eight
+# times. The one-byte cap rejects a known full-file response before its body.
+# curl is used only for this bounded capability check; aria2 owns the file.
+probe_range_support() {
+  local probe_dir probe_result probe_rc probe_code probe_size probe_range redirect redirect_rc h
+  local probe_url="$url"
+  local common_args=(--disable --globoff --silent --max-time 20
+    --connect-timeout "${connect_timeout:-10}")
+  [ -n "$ua" ] && common_args+=(--user-agent "$ua")
+  [ -n "$referer" ] && common_args+=(--referer "$referer")
+  [ -n "$ca_cert" ] && common_args+=(--cacert "$ca_cert")
+  if [ "$header_count" -gt 0 ]; then
+    for h in "${headers[@]}"; do common_args+=(--header "$h"); done
+  fi
+  if [ "$authenticated" = 1 ]; then
+    # Curl can return 63 when a redirect's body exceeds one byte. The
+    # Location is still available. Do not follow it with the original token.
+    common_args+=(--proto =https)
+    redirect="$("$real_curl" "${common_args[@]}" --output /dev/null --range 0-0 \
+      --max-filesize 1 --write-out '%{http_code}\n%{redirect_url}' --header @- \
+      -- "$url" <"$auth_file" 2>/dev/null)"
+    redirect_rc=$?
+    case "${redirect%%$'\n'*}" in
+      301|302|303|307|308) probe_url="${redirect#*$'\n'}" ;;
+      *) probe_url="" ;;
+    esac
+    if { [ "$redirect_rc" != 0 ] && [ "$redirect_rc" != 63 ]; } || ! private_https_url "$probe_url"; then
+      to_curl "auth-no-https-redirect"
+    fi
+    common_args+=(--proto-redir =https)
+  fi
+  probe_dir="$(mktemp -d 2>/dev/null || true)"
+  range_ok=0
+  download_url="$url"
+  if [ -n "$probe_dir" ]; then
+    local probe_args=("${common_args[@]}" --location --fail
+      --dump-header "$probe_dir/headers" --output "$probe_dir/body"
+      --write-out '%{http_code}\n%{url_effective}')
+    # aria2 needs HEAD's size before allocating pieces. Without it, its first
+    # GET would again request the complete entity, even with pipelining enabled.
+    probe_result="$(probe_curl --head --output /dev/null 2>/dev/null)"
+    probe_rc=$?
+    probe_code="${probe_result%%$'\n'*}"
+    probe_size="$(awk '/^HTTP\// {s=""} tolower($1)=="content-length:" {s=$2; sub(/\r$/, "", s)} END {print s}' "$probe_dir/headers" 2>/dev/null)"
+    if [ "$probe_rc" = 0 ] && [ "$probe_code" = 200 ] && [[ "$probe_size" =~ ^[0-9]+$ ]] && [ "$probe_size" != 0 ]; then
+      probe_result="$(probe_curl --range 0-0 --max-filesize 1 2>/dev/null)"
+      probe_rc=$?
+      probe_code="${probe_result%%$'\n'*}"
+      probe_range="$(awk '/^HTTP\// {r=""} tolower($1)=="content-range:" {r=$2 " " $3; sub(/\r$/, "", r)} END {print r}' "$probe_dir/headers" 2>/dev/null)"
+      if [ "$probe_rc" = 0 ] && [ "$probe_code" = 206 ] &&
+         [ "$probe_range" = "bytes 0-0/$probe_size" ] &&
+         [ -f "$probe_dir/body" ] && [ "$(wc -c <"$probe_dir/body" | tr -d ' ')" = 1 ]; then
+        range_ok=1
+        # Reuse the validated final URL so every worker does not repeat the
+        # redirect chain and race to reserve the same initial piece.
+        download_url="${probe_result#*$'\n'}"
+        if [ "$authenticated" = 0 ]; then
+          case "$download_url" in http://*|https://*) ;; *) download_url="$url" ;; esac
+        fi
+      fi
+    fi
+    rm -f -- "$probe_dir/headers" "$probe_dir/body"
+    rmdir -- "$probe_dir" 2>/dev/null || true
+  fi
+}
+
 outdir="$(dirname "$out")"
 if [ ! -d "$outdir" ]; then
   if [ "$create_dirs" = 1 ]; then
@@ -241,6 +386,11 @@ if [ -e "$out" ] || [ -L "$out" ]; then
 fi
 if [ -e "$out.aria2" ] || [ -L "$out.aria2" ]; then
   [ "$resume" = 1 ] && [ -f "$out" ] && [ -f "$out.aria2" ] && [ ! -L "$out.aria2" ] || to_curl "existing-aria2-state"
+fi
+
+if [ "$authenticated" = 1 ]; then
+  probe_range_support
+  [ "$range_ok" = 1 ] && private_https_url "$download_url" || to_curl "auth-range-unverified"
 fi
 
 # Keep aria2's sparse file away from Homebrew's destination. Homebrew may
@@ -333,48 +483,7 @@ if [ "$header_count" -gt 0 ]; then
   done
 fi
 
-# Validate an actual range response before allowing parallel GETs. A server
-# advertising Accept-Ranges may still ignore Range; never fan that out eight
-# times. The one-byte cap rejects a known full-file response before its body.
-# curl is used only for this bounded capability check; aria2 owns the file.
-probe_dir="$(mktemp -d 2>/dev/null || true)"
-range_ok=0
-download_url="$url"
-if [ -n "$probe_dir" ]; then
-  probe_args=(--disable --globoff --silent --location --fail --max-time 20
-    --connect-timeout "${connect_timeout:-10}"
-    --dump-header "$probe_dir/headers" --output "$probe_dir/body"
-    --write-out '%{http_code}\n%{url_effective}')
-  [ -n "$ua" ] && probe_args+=(--user-agent "$ua")
-  [ -n "$referer" ] && probe_args+=(--referer "$referer")
-  [ -n "$ca_cert" ] && probe_args+=(--cacert "$ca_cert")
-  if [ "$header_count" -gt 0 ]; then
-    for h in "${headers[@]}"; do probe_args+=(--header "$h"); done
-  fi
-  # aria2 needs HEAD's size before allocating pieces. Without it, its first
-  # GET would again request the complete entity, even with pipelining enabled.
-  probe_result="$("$real_curl" "${probe_args[@]}" --head --output /dev/null -- "$url" 2>/dev/null)"
-  probe_rc=$?
-  probe_code="${probe_result%%$'\n'*}"
-  probe_size="$(awk '/^HTTP\// {s=""} tolower($1)=="content-length:" {s=$2; sub(/\r$/, "", s)} END {print s}' "$probe_dir/headers" 2>/dev/null)"
-  if [ "$probe_rc" = 0 ] && [ "$probe_code" = 200 ] && [[ "$probe_size" =~ ^[0-9]+$ ]] && [ "$probe_size" != 0 ]; then
-    probe_result="$("$real_curl" "${probe_args[@]}" --range 0-0 --max-filesize 1 -- "$url" 2>/dev/null)"
-    probe_rc=$?
-    probe_code="${probe_result%%$'\n'*}"
-    probe_range="$(awk '/^HTTP\// {r=""} tolower($1)=="content-range:" {r=$2 " " $3; sub(/\r$/, "", r)} END {print r}' "$probe_dir/headers" 2>/dev/null)"
-    if [ "$probe_rc" = 0 ] && [ "$probe_code" = 206 ] &&
-       [ "$probe_range" = "bytes 0-0/$probe_size" ] &&
-       [ -f "$probe_dir/body" ] && [ "$(wc -c <"$probe_dir/body" | tr -d ' ')" = 1 ]; then
-      range_ok=1
-      # Reuse the validated final URL so every worker does not repeat the
-      # redirect chain and race to reserve the same initial piece.
-      download_url="${probe_result#*$'\n'}"
-      case "$download_url" in http://*|https://*) ;; *) download_url="$url" ;; esac
-    fi
-  fi
-  rm -f -- "$probe_dir/headers" "$probe_dir/body"
-  rmdir -- "$probe_dir" 2>/dev/null || true
-fi
+if [ "$authenticated" = 0 ]; then probe_range_support; fi
 if [ "$range_ok" = 1 ]; then
   log "range-mode=bounded-pieces"
 else
@@ -393,7 +502,7 @@ if [ "$show_readout" = 1 ]; then
   args+=(--show-console-readout=true --truncate-console-readout=true)
   # Readouts must remain visible through Homebrew's capture pipes. Plain
   # text also avoids color escapes when the wrapper itself has no terminal.
-  [ -t 1 ] || args+=(--enable-color=false)
+  { [ "$authenticated" = 0 ] && [ -t 1 ]; } || args+=(--enable-color=false)
 else
   args+=(--show-console-readout=false)
 fi
@@ -416,12 +525,28 @@ if [[ "$(basename "$out")" =~ ^[0-9a-f]{64}--.+[.]incomplete$ ]] &&
   args+=(--disk-cache=0 --stream-piece-selector=inorder)
 fi
 
-log "backend=aria2c url=$url out=$out connections=$CONNECTIONS resume=$resume"
+if [ "$authenticated" = 1 ]; then
+  log "backend=aria2c auth-redirect connections=$CONNECTIONS resume=$resume"
+else
+  log "backend=aria2c url=$url out=$out connections=$CONNECTIONS resume=$resume"
+fi
 errfile=""
-if [ -n "$LOG" ] || [ -n "$DEBUG" ]; then
+if [ "$authenticated" = 0 ] && { [ -n "$LOG" ] || [ -n "$DEBUG" ]; }; then
   errfile="$(mktemp 2>/dev/null || true)"
 fi
 invoke_aria2() {
+  if [ "$authenticated" = 1 ]; then
+    # Keep signed URLs out of argv. The progress relay filters authenticated
+    # console output, while silent Homebrew jobs poll the staged file.
+    if [ "$show_readout" = 1 ]; then
+      printf '%s\n  out=data\n' "$download_url" |
+        "${aria2_runner[@]}" "${args[@]}" --no-conf=true --input-file=- --stderr=true 2>&1
+    else
+      printf '%s\n  out=data\n' "$download_url" |
+        "${aria2_runner[@]}" "${args[@]}" --no-conf=true --input-file=- >/dev/null 2>&1
+    fi
+    return "${PIPESTATUS[1]}"
+  fi
   if [ "$show_readout" = 1 ]; then
     # aria2 buffers carriage-return readouts on piped stdout. stderr is
     # unbuffered; merge it into our newline relay before Homebrew captures it.
@@ -442,12 +567,17 @@ invoke_aria2() {
 # newline for each update, and redraw the previous row when a bar was requested.
 stream_progress() {
   local character="" record="" previous_status=0 status=0
+  local safe_status='^\[#[0-9a-f]+[[:space:]][a-zA-Z0-9 .:%/()-]+\]$'
   # Read directly with Bash: stdio-based text filters may themselves buffer
   # short carriage-return records until the upstream process closes its pipe.
   while IFS= read -r -n 1 character; do
     case "$character" in
       ''|$'\r')
         [ -n "$record" ] || continue
+        if [ "$authenticated" = 1 ] && [[ ! "$record" =~ $safe_status ]]; then
+          record=""
+          continue
+        fi
         case "$record" in '[#'*) status=1 ;; *) status=0 ;; esac
         if [ "$status" = 1 ] && [ "$progress_bar" = 1 ] && [ "$previous_status" = 1 ]; then
           printf '\033[1A\033[2K\r%s\n' "$record"
@@ -459,7 +589,9 @@ stream_progress() {
       *) record="$record$character" ;;
     esac
   done
-  [ -z "$record" ] || printf '%s\n' "$record"
+  if [ -n "$record" ] && { [ "$authenticated" = 0 ] || [[ "$record" =~ $safe_status ]]; }; then
+    printf '%s\n' "$record"
+  fi
   return 0
 }
 run_aria2() {
@@ -472,7 +604,7 @@ run_aria2() {
 }
 run_aria2
 rc=$?
-if [ "$rc" = 8 ]; then
+if [ "$rc" = 8 ] && [ "$authenticated" = 0 ]; then
   # Invalid/unsupported range response: start a single aria2 stream from zero.
   # Only staged files are discarded; the original partial remains untouched.
   log "range-unsupported -> restarting aria2c with one connection"
@@ -496,7 +628,7 @@ if [ "$rc" -ne 0 ] || [ ! -s "$workdir/data" ] || [ -e "$workdir/data.aria2" ]; 
     [ "$rc" -ne 0 ] || rc=1
     exit "$rc"
   fi
-  "$real_curl" "${orig[@]}"
+  run_original_curl
   rc=$?
   [ "$rc" -ne 0 ] || cleanup_workdir
   exit "$rc"
