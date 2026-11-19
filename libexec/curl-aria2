@@ -253,12 +253,16 @@ if [ -z "$aria2c" ]; then
 fi
 [ -n "$aria2c" ] || to_curl "aria2c-not-installed"
 
-# Only a single bearer/token header gets the redirect handoff. Other stdin
+# Only a single supported Authorization header gets the redirect handoff. Other stdin
 # content is replayed byte-for-byte if the operation falls back to curl.
 authenticated=0
 auth_file=""
 if [ "$stdin_header" = 1 ] || [ -n "$auth_header" ]; then
-  case "$url" in https://*) ;; *) to_curl "auth-requires-https" ;; esac
+  case "$url" in
+    https://ghcr.io/v2/*/manifests/*) to_curl "ghcr-manifest" ;;
+    https://*) ;;
+    *) to_curl "auth-requires-https" ;;
+  esac
   [ "$stdin_header" = 0 ] || [ -z "$auth_header" ] || to_curl "multiple-authorization-headers"
   if [ "$header_count" -gt 0 ]; then
     for h in "${headers[@]}"; do
@@ -277,7 +281,7 @@ if [ "$stdin_header" = 1 ] || [ -n "$auth_header" ]; then
     printf '%s\n' "$auth_header" >"$auth_file" || to_curl "auth-buffer-unavailable"
   fi
   LC_ALL=C awk '
-    NR != 1 || tolower($0) !~ /^authorization:[ \t]*(bearer|token)[ \t]+[a-z0-9._~+\/=-]+[ \t]*\r?$/ { bad = 1 }
+    NR != 1 || tolower($0) !~ /^authorization:[ \t]*(bearer|token|basic)[ \t]+[a-z0-9._~+\/=-]+[ \t]*\r?$/ { bad = 1 }
     END { exit (bad || NR != 1) }
   ' "$auth_file" || to_curl "unsupported-auth-header"
   authenticated=1

@@ -42,8 +42,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.path.startswith("/broken?") and body and self.headers.get("Range") != "bytes=0-0":
                 self.send_error(503)
                 return
-        elif self.path in ("/authenticated", "/basic", "/redirect", "/fallback-redirect"):
-            allowed = (f"Basic {SECRET}",) if self.path == "/basic" else (f"Bearer {SECRET}", f"token {SECRET}")
+        elif self.path in ("/authenticated", "/digest", "/redirect", "/fallback-redirect"):
+            allowed = ((f'Digest response="{SECRET}"',) if self.path == "/digest"
+                       else (f"Bearer {SECRET}", f"token {SECRET}", "Basic ZmFrZTpwYXNz"))
             if self.headers.get("Authorization") not in allowed:
                 self.send_error(401)
                 return
@@ -120,15 +121,16 @@ with tempfile.TemporaryDirectory(prefix="aria2-trust-") as temporary:
         log = (tmp / "decisions.log").read_text()
         assert "reason=auth-no-https-redirect" in log
 
-        result, output = download("basic", tmp / "server.pem", ("--header", "@-"),
-                                  path="/basic",
-                                  headers=f"Authorization: Basic {SECRET}\r\n".encode())
+        result, output = download("digest", tmp / "server.pem", ("--header", "@-"),
+                                  path="/digest",
+                                  headers=f'Authorization: Digest response="{SECRET}"\r\n'.encode())
         assert result.returncode == 0, result.stderr.decode()
         assert output.read_bytes() == DATA
         assert "reason=unsupported-auth-header" in (tmp / "decisions.log").read_text()
 
         for options, headers in (
             (("--header", "@-"), f"Authorization: Bearer {SECRET}\r\n".encode()),
+            (("--header", "@-"), b"Authorization: Basic ZmFrZTpwYXNz\n"),
             (("--header", f"Authorization: token {SECRET}",
               "--header", "Accept: application/octet-stream"), None),
         ):
@@ -143,7 +145,7 @@ with tempfile.TemporaryDirectory(prefix="aria2-trust-") as temporary:
             assert "backend=aria2c auth-redirect" in log and "backend=aria2c ok" in log, log
             assert all(auth is None for auth, _ in DELIVERY_REQUESTS)
             assert any(value not in (None, "bytes=0-0") for _, value in DELIVERY_REQUESTS)
-            assert SECRET not in log and SIGNED_QUERY not in log
+            assert SECRET not in log and "ZmFrZTpwYXNz" not in log and SIGNED_QUERY not in log
             assert SIGNED_QUERY.encode() not in result.stdout + result.stderr
 
         (tmp / "decisions.log").write_text("")
@@ -153,7 +155,7 @@ with tempfile.TemporaryDirectory(prefix="aria2-trust-") as temporary:
         assert output.read_bytes() == DATA
         log = (tmp / "decisions.log").read_text()
         assert "backend=aria2c auth-redirect" in log and "falling back to curl" in log, log
-        assert SECRET not in log and SIGNED_QUERY not in log
+        assert SECRET not in log and "ZmFrZTpwYXNz" not in log and SIGNED_QUERY not in log
 
         cert_hash = subprocess.check_output(["openssl", "x509", "-hash", "-noout", "-in", str(tmp / "server.pem")], text=True).strip()
         (tmp / f"{cert_hash}.0").symlink_to(tmp / "server.pem")

@@ -94,6 +94,6 @@ MIT。本项目与 Homebrew、aria2 官方无关联。
 
 Homebrew 原生并发界面不显示 aria2 的连接数、速度和预计剩余时间；串行下载仍可显示 aria2 的详细状态。验证：`ruby test/contiguous_progress.rb` 和 `python3 test/parallel_progress.py`。
 
-对于只用一条 Bearer 或 GitHub token 请求头鉴权的 HTTPS 下载（包括 Homebrew 的 `--header @-`），curl 先获取重定向地址。如果该 HTTPS 地址无需原鉴权头且支持 Range，aria2 会分段下载。这覆盖 GHCR bottle 和符合条件的 release 附件。需要回退时，curl 会收到原始请求头。其他请求头文件、Cookie 和代理鉴权仍由 curl 处理。
+对于只用一条 Bearer、GitHub token 或 Basic 请求头鉴权的 HTTPS 下载（包括 Homebrew 的 `--header @-`），curl 先获取重定向地址。如果该 HTTPS 地址无需原鉴权头且支持 Range，aria2 会分段下载。这覆盖 GHCR bottle 和符合条件的 release 附件。需要回退时，curl 会收到原始请求头。其他请求头文件、Cookie 和代理鉴权仍由 curl 处理。
 
 包含哈希 CA/CRL 条目的证书目录由 curl 处理。Homebrew 注入的证书包父目录如果没有额外哈希信任条目，aria2 会使用原证书包。
